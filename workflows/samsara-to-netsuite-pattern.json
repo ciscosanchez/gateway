@@ -1,0 +1,194 @@
+{
+  "name": "Samsara to NetSuite Pattern",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "samsara",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "name": "Samsara Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [250, 300],
+      "webhookId": "samsara-webhook"
+    },
+    {
+      "parameters": {
+        "functionCode": "// Extract and transform Samsara data\nconst samsaraEvent = $input.item.json;\n\n// Transform to internal format\nconst transformedData = {\n  eventType: samsaraEvent.eventType,\n  vehicleId: samsaraEvent.vehicle?.id,\n  location: {\n    lat: samsaraEvent.location?.latitude,\n    lng: samsaraEvent.location?.longitude\n  },\n  timestamp: samsaraEvent.time,\n  originalPayload: samsaraEvent\n};\n\nreturn { json: transformedData };"
+      },
+      "name": "Transform Data",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [450, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://redpanda:28082/topics/samsara-events",
+        "authentication": "none",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "records",
+              "value": "=[{\"value\": {{ $json }}}]"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "name": "Store in Kafka",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 3,
+      "position": [650, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://{{ $env.NETSUITE_ACCOUNT_ID }}.suitetalk.api.netsuite.com/services/rest/record/v1/customrecord_delivery_event",
+        "authentication": "oAuth1",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "custrecord_vehicle_id",
+              "value": "={{ $json.vehicleId }}"
+            },
+            {
+              "name": "custrecord_event_type",
+              "value": "={{ $json.eventType }}"
+            },
+            {
+              "name": "custrecord_latitude",
+              "value": "={{ $json.location.lat }}"
+            },
+            {
+              "name": "custrecord_longitude",
+              "value": "={{ $json.location.lng }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "name": "Update NetSuite",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 3,
+      "position": [850, 300]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { \"success\": true, \"message\": \"Event processed\", \"eventId\": $json.id } }}"
+      },
+      "name": "Success Response",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [1050, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://redpanda:28082/topics/errors-dlq",
+        "authentication": "none",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "records",
+              "value": "=[{\"value\": { \"error\": \"{{ $json.message }}\", \"workflow\": \"samsara-to-netsuite\", \"timestamp\": \"{{ $now }}\" }}]"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "name": "Log Error to DLQ",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 3,
+      "position": [850, 500]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { \"success\": false, \"error\": \"Processing failed\", \"message\": $json.message } }}",
+        "options": {
+          "responseCode": "500"
+        }
+      },
+      "name": "Error Response",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [1050, 500]
+    }
+  ],
+  "connections": {
+    "Samsara Webhook": {
+      "main": [
+        [
+          {
+            "node": "Transform Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Transform Data": {
+      "main": [
+        [
+          {
+            "node": "Store in Kafka",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Store in Kafka": {
+      "main": [
+        [
+          {
+            "node": "Update NetSuite",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Update NetSuite": {
+      "main": [
+        [
+          {
+            "node": "Success Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ],
+      "error": [
+        [
+          {
+            "node": "Log Error to DLQ",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Log Error to DLQ": {
+      "main": [
+        [
+          {
+            "node": "Error Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  }
+}

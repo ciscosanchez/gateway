@@ -1,0 +1,124 @@
+{
+  "name": "Samsara - Get Fleet Dashboard",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "*/5 * * * *"
+            }
+          ]
+        }
+      },
+      "name": "Every 5 Minutes",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1,
+      "position": [250, 300]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "https://api.samsara.com/fleet/vehicles",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{$env.SAMSARA_API_TOKEN}}"
+            },
+            {
+              "name": "Accept",
+              "value": "application/json"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "name": "Get Samsara Vehicles",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [450, 300]
+    },
+    {
+      "parameters": {
+        "functionCode": "// Parse Samsara response and create dashboard data\nconst response = $input.item.json;\nconst vehicles = response.data || [];\n\n// Count vehicles by location/tag\nconst byLocation = {};\nconst byMake = {};\nconst withDrivers = vehicles.filter(v => v.staticAssignedDriver).length;\n\nvehicles.forEach(vehicle => {\n  // Count by location (using first tag)\n  const location = vehicle.tags?.[0]?.name || 'Unknown';\n  byLocation[location] = (byLocation[location] || 0) + 1;\n  \n  // Count by make\n  const make = vehicle.make || 'Unknown';\n  byMake[make] = (byMake[make] || 0) + 1;\n});\n\n// Create summary\nconst summary = {\n  total_vehicles: vehicles.length,\n  vehicles_with_assigned_drivers: withDrivers,\n  vehicles_by_location: byLocation,\n  vehicles_by_make: byMake,\n  sample_vehicles: vehicles.slice(0, 10).map(v => ({\n    name: v.name,\n    make: v.make,\n    model: v.model,\n    year: v.year,\n    license_plate: v.licensePlate,\n    driver: v.staticAssignedDriver?.name || 'Unassigned',\n    location: v.tags?.[0]?.name || 'Unknown'\n  })),\n  timestamp: new Date().toISOString()\n};\n\nreturn { json: summary };"
+      },
+      "name": "Create Dashboard Summary",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [650, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://redpanda:28082/topics/fleet-dashboard",
+        "authentication": "none",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "records",
+              "value": "=[{\"value\": {{ $json }}}]"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "name": "Store in Kafka",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [850, 300]
+    }
+  ],
+  "connections": {
+    "Every 5 Minutes": {
+      "main": [
+        [
+          {
+            "node": "Get Samsara Vehicles",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Samsara Vehicles": {
+      "main": [
+        [
+          {
+            "node": "Create Dashboard Summary",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create Dashboard Summary": {
+      "main": [
+        [
+          {
+            "node": "Store in Kafka",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  }
+}

@@ -1,0 +1,159 @@
+{
+  "name": "Samsara Webhook to Kafka",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "samsara",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "name": "Samsara Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [250, 300],
+      "webhookId": "samsara-webhook"
+    },
+    {
+      "parameters": {
+        "functionCode": "// Parse Samsara webhook event\nconst payload = $input.item.json;\n\n// Extract and normalize data\nconst event = {\n  source: 'samsara',\n  event_type: payload.eventType,\n  timestamp: payload.time || new Date().toISOString(),\n  vehicle: {\n    id: payload.data?.vehicle?.id,\n    name: payload.data?.vehicle?.name\n  },\n  driver: {\n    id: payload.data?.driver?.id,\n    name: payload.data?.driver?.name\n  },\n  location: {\n    lat: payload.data?.location?.latitude,\n    lng: payload.data?.location?.longitude,\n    address: payload.data?.location?.reverseGeo?.formattedLocation,\n    heading: payload.data?.location?.heading,\n    speed: payload.data?.location?.speedMilesPerHour\n  },\n  geofence: {\n    id: payload.data?.geofence?.id,\n    name: payload.data?.geofence?.name\n  },\n  raw_payload: payload\n};\n\nreturn { json: event };"
+      },
+      "name": "Parse Event",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [450, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://redpanda:28082/topics/samsara-events",
+        "authentication": "none",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "records",
+              "value": "=[{\"value\": {{ $json }}}]"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "name": "Send to Kafka",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [650, 300]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { \"success\": true, \"message\": \"Event received\", \"event_type\": $json.event_type, \"timestamp\": $now } }}"
+      },
+      "name": "Success Response",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [850, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://redpanda:28082/topics/errors-dlq",
+        "authentication": "none",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "records",
+              "value": "=[{\"value\": { \"workflow\": \"samsara-webhook\", \"error\": \"{{ $json.message }}\", \"timestamp\": \"{{ $now }}\", \"original_data\": {{ $json }} }}]"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "name": "Log Error",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [650, 500]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { \"success\": false, \"error\": \"Failed to process event\" } }}",
+        "options": {
+          "responseCode": "500"
+        }
+      },
+      "name": "Error Response",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [850, 500]
+    }
+  ],
+  "connections": {
+    "Samsara Webhook": {
+      "main": [
+        [
+          {
+            "node": "Parse Event",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Event": {
+      "main": [
+        [
+          {
+            "node": "Send to Kafka",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send to Kafka": {
+      "main": [
+        [
+          {
+            "node": "Success Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ],
+      "error": [
+        [
+          {
+            "node": "Log Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Log Error": {
+      "main": [
+        [
+          {
+            "node": "Error Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  }
+}

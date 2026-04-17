@@ -1,0 +1,36 @@
+# Environment variables with secrets (NEVER COMMIT THESE)
+.env
+.env.local
+.env.production
+*.key
+*.pem
+secrets/
+
+# Docker volumes
+postgres-data/
+n8n-data/
+grafana-data/
+
+# Backups (contain sensitive data)
+backups/
+*.sql
+*.tar.gz
+
+# Logs
+logs/
+*.log
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Temporary files
+tmp/
+temp/
+*.tmp
