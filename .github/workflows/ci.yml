@@ -153,7 +153,19 @@ jobs:
             -out    config/kong/certs/server.crt \
             -subj "/CN=localhost"
       - name: docker compose up (lite profile for CI)
+        id: compose_up
         run: docker compose -f docker-compose.yml -f docker-compose.lite.yml up -d --wait --wait-timeout 240
+      - name: Dump logs on failure
+        if: failure() && steps.compose_up.outcome == 'failure'
+        run: |
+          echo "=== ps ==="
+          docker compose -f docker-compose.yml -f docker-compose.lite.yml ps -a || true
+          echo "=== redpanda-0 ==="
+          docker logs gateway-redpanda-0 2>&1 | tail -120 || true
+          echo "=== kong ==="
+          docker logs gateway-kong 2>&1 | tail -80 || true
+          echo "=== postgres ==="
+          docker logs gateway-postgres 2>&1 | tail -40 || true
       - name: Services status
         run: docker compose -f docker-compose.yml -f docker-compose.lite.yml ps
       - name: Kong admin health

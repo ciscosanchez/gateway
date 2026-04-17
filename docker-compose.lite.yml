@@ -18,19 +18,22 @@ services:
       - redpanda
       - start
       - --node-id=0
-      - --seeds=redpanda-0:33145
+      - --mode=dev-container
       - --kafka-addr=INTERNAL://0.0.0.0:29092,EXTERNAL://0.0.0.0:9092
       - --advertise-kafka-addr=INTERNAL://redpanda-0:29092,EXTERNAL://localhost:9092
       - --rpc-addr=0.0.0.0:33145
       - --advertise-rpc-addr=redpanda-0:33145
       - --pandaproxy-addr=INTERNAL://0.0.0.0:28082
       - --advertise-pandaproxy-addr=INTERNAL://redpanda-0:28082
-      - --set=redpanda.default_topic_replications=1
-      - --set=redpanda.auto_create_topics_enabled=false
-      - --set=redpanda.empty_seed_starts_cluster=true
       - --smp=1
       - --memory=1G
       - --overprovisioned
+    healthcheck:
+      test: ["CMD-SHELL", "rpk cluster info >/dev/null 2>&1"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 30s
     deploy:
       resources:
         limits: { cpus: '1.5', memory: 1536M }
