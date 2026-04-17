@@ -2,7 +2,9 @@
 # Smoke test the Gateway stack. Expects `docker compose up -d` to have run.
 set -euo pipefail
 
-GREEN='\033[0;32m'; RED='\033[0;31m'; YELLOW='\033[1;33m'; NC='\033[0m'
+GREEN='\033[0;32m'; RED='\033[0;31m'; NC='\033[0m'
+# shellcheck disable=SC2034
+YELLOW='\033[1;33m'
 pass=0; fail=0
 
 check() {
@@ -40,7 +42,7 @@ echo "── Public exposure sanity (these MUST be blocked from the public IP) �
 for port in 8001 8002 5678 8080 3002 9090 9093 3100; do
   # On this host we bind to 127.0.0.1 only, so curl to 127.0.0.1 works but
   # binding to 0.0.0.0 would be caught by an external scanner - document here.
-  :
+  _=$port
 done
 
 echo ""
