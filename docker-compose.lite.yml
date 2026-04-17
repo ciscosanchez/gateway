@@ -29,11 +29,11 @@ services:
       - --memory=1G
       - --overprovisioned
     healthcheck:
-      test: ["CMD-SHELL", "rpk cluster info >/dev/null 2>&1"]
+      test: ["CMD-SHELL", "curl -fsS http://localhost:9644/v1/status/ready | grep -q ready"]
       interval: 5s
       timeout: 5s
-      retries: 20
-      start_period: 30s
+      retries: 30
+      start_period: 20s
     deploy:
       resources:
         limits: { cpus: '1.5', memory: 1536M }
