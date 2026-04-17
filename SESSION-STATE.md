@@ -233,8 +233,7 @@ The initial `appstage.goarmstrong.com` was too busy:
 61a0d40  initial
 ```
 
-Author: `Gateway DevOps <devops@gateway.internal>`,
-`Co-Authored-By: Abacus.AI CLI <agent@abacus.ai>`.
+Author: `Gateway DevOps <devops@gateway.internal>`.
 
 ---
 
