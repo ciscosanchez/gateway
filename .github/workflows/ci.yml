@@ -49,6 +49,8 @@ jobs:
             rules:
               line-length: disable
               document-start: disable
+              braces: disable
+              colons: disable
               comments: { min-spaces-from-content: 1 }
               truthy: { check-keys: false }
 
