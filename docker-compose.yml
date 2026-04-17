@@ -150,6 +150,7 @@ services:
   redpanda-1:
     image: redpandadata/redpanda:v24.1.7
     container_name: gateway-redpanda-1
+    profiles: ["ha"]
     <<: *default-restart
     command:
       - redpanda
@@ -177,6 +178,7 @@ services:
   redpanda-2:
     image: redpandadata/redpanda:v24.1.7
     container_name: gateway-redpanda-2
+    profiles: ["ha"]
     <<: *default-restart
     command:
       - redpanda
@@ -347,6 +349,7 @@ services:
   n8n-worker:
     image: n8nio/n8n:1.28.0
     # No container_name so we can scale with --scale n8n-worker=N
+    profiles: ["ha"]
     <<: *default-restart
     command: ["n8n", "worker", "--concurrency=10"]
     environment:
@@ -502,7 +505,7 @@ services:
       - ./config/grafana/dashboards:/var/lib/grafana/dashboards:ro
     ports:
       - "127.0.0.1:3002:3000"
-    depends_on: [prometheus, loki]
+    depends_on: [prometheus]
     deploy:
       resources:
         limits: { cpus: '0.5', memory: 512M }
@@ -512,6 +515,7 @@ services:
   loki:
     image: grafana/loki:2.9.6
     container_name: gateway-loki
+    profiles: ["logs"]
     <<: *default-restart
     command: -config.file=/etc/loki/local-config.yaml
     volumes:
@@ -526,6 +530,7 @@ services:
   promtail:
     image: grafana/promtail:2.9.6
     container_name: gateway-promtail
+    profiles: ["logs"]
     <<: *default-restart
     command: -config.file=/etc/promtail/config.yml
     volumes:

@@ -1,0 +1,43 @@
+# Lite overlay for POC / laptop demos.
+#
+# Usage:
+#   docker compose -f docker-compose.yml -f docker-compose.lite.yml up -d
+#
+# What this does vs. the default (HA) stack:
+#   - redpanda-0 runs standalone (1 broker), replication factor 1
+#   - redpanda-1, redpanda-2, n8n-worker, loki, promtail are gated behind
+#     profiles ("ha" / "logs") in the base compose, so they don't start.
+#   - Prometheus only scrapes redpanda-0.
+#   - Redpanda Console and n8n point at redpanda-0 only.
+#
+# Do NOT use this for production. Single broker = data loss on crash.
+
+services:
+  redpanda-0:
+    command:
+      - redpanda
+      - start
+      - --node-id=0
+      - --mode=dev-container
+      - --kafka-addr=INTERNAL://0.0.0.0:29092,EXTERNAL://0.0.0.0:9092
+      - --advertise-kafka-addr=INTERNAL://redpanda-0:29092,EXTERNAL://localhost:9092
+      - --rpc-addr=0.0.0.0:33145
+      - --advertise-rpc-addr=redpanda-0:33145
+      - --pandaproxy-addr=INTERNAL://0.0.0.0:28082
+      - --advertise-pandaproxy-addr=INTERNAL://redpanda-0:28082
+      - --set=redpanda.default_topic_replications=1
+      - --set=redpanda.auto_create_topics_enabled=false
+      - --smp=1
+      - --memory=1G
+    deploy:
+      resources:
+        limits: { cpus: '1.5', memory: 1536M }
+        reservations: { cpus: '0.5', memory: 512M }
+
+  redpanda-console:
+    environment:
+      KAFKA_BROKERS: redpanda-0:29092
+
+  n8n:
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: redpanda-0:29092

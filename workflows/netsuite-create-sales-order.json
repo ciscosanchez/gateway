@@ -33,7 +33,7 @@
         "method": "POST",
         "url": "=https://{{$env.NETSUITE_ACCOUNT_ID}}.suitetalk.api.netsuite.com/services/rest/record/v1/salesOrder",
         "authentication": "predefinedCredentialType",
-        "nodeCredentialType": "netSuiteOAuth2Api",
+        "nodeCredentialType": "oAuth1Api",
         "sendBody": true,
         "specifyBody": "json",
         "jsonBody": "={{ JSON.stringify($json.netsuite_payload) }}",
