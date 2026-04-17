@@ -17,7 +17,7 @@
     {
       "parameters": {
         "method": "POST",
-        "url": "http://redpanda:28082/topics/test-events",
+        "url": "http://redpanda-0:28082/topics/test-events",
         "authentication": "none",
         "sendBody": true,
         "bodyParameters": {

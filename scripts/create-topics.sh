@@ -1,38 +1,50 @@
-#!/bin/bash
+#!/usr/bin/env bash
+# Creates Redpanda topics for the Gateway platform.
+# Runs against the 3-node cluster. Safe to re-run (idempotent).
+set -euo pipefail
 
-echo "📨 Creating Redpanda topics..."
+BROKER="${BROKER:-redpanda-0:29092}"
+CONTAINER="${CONTAINER:-gateway-redpanda-0}"
+
+echo "📨 Creating Redpanda topics on ${BROKER}..."
+
+# topic_name partitions replication retention_ms compression
+topics=(
+  # high volume per-vehicle events; key by vehicle_id for ordering
+  "samsara-events        24 3 604800000  zstd"        # 7d
+  # business events
+  "orders                12 3 2592000000 zstd"        # 30d
+  "inventory              6 3 604800000  zstd"        # 7d
+  "edi-outbound           6 3 2592000000 zstd"        # 30d
+  "netsuite-updates      12 3 604800000  zstd"        # 7d
+  "wms-events             6 3 604800000  zstd"        # 7d
+  # Dead-letter queue - low volume, long retention for forensic analysis
+  "errors-dlq             3 3 7776000000 zstd"        # 90d
+)
+
+for row in "${topics[@]}"; do
+  # shellcheck disable=SC2086
+  set -- $row
+  name=$1; partitions=$2; replication=$3; retention=$4; compression=$5
+
+  echo ""
+  echo "→ ${name}  (p=${partitions} r=${replication} retention=${retention}ms compression=${compression})"
+
+  docker exec "${CONTAINER}" rpk topic create "${name}" \
+    --brokers "${BROKER}" \
+    --partitions "${partitions}" \
+    --replicas "${replication}" \
+    -c "retention.ms=${retention}" \
+    -c "compression.type=${compression}" \
+    -c "min.insync.replicas=2" \
+    -c "cleanup.policy=delete" \
+    -c "max.message.bytes=1048576" \
+    2>&1 | grep -vE "already exists|WARN" || true
+done
+
 echo ""
-
-CONTAINER="gateway-redpanda"
-
-# Function to create topic
-create_topic() {
-    local TOPIC_NAME=$1
-    local PARTITIONS=${2:-3}
-    local REPLICATION=${3:-1}
-    
-    echo "Creating topic: $TOPIC_NAME (partitions: $PARTITIONS, replication: $REPLICATION)"
-    
-    docker exec -it $CONTAINER rpk topic create $TOPIC_NAME \
-        --partitions $PARTITIONS \
-        --replicas $REPLICATION 2>&1 | grep -v "WARN"
-    
-    echo ""
-}
-
-# Create topics for event streams
-create_topic "samsara-events" 3 1
-create_topic "orders" 3 1
-create_topic "inventory" 3 1
-create_topic "edi-outbound" 3 1
-create_topic "netsuite-updates" 3 1
-create_topic "wms-events" 3 1
-create_topic "errors-dlq" 1 1
-
-echo "🎉 Topics created!"
-echo ""
-echo "List all topics:"
-docker exec -it $CONTAINER rpk topic list
+echo "✅ Topic list:"
+docker exec "${CONTAINER}" rpk topic list --brokers "${BROKER}"
 
 echo ""
-echo "View topics in Redpanda Console: http://localhost:8080"
+echo "Ensure producers use: acks=all, enable.idempotence=true, max.in.flight=5"

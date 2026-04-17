@@ -5,10 +5,13 @@
       "parameters": {
         "topic": "orders",
         "groupId": "netsuite-sales-order-consumer",
-        "brokers": "redpanda:29092",
+        "brokers": "redpanda-0:29092,redpanda-1:29092,redpanda-2:29092",
         "options": {
           "allowTopicCreation": false,
-          "autoCommit": true
+          "autoCommit": false,
+          "maxInFlightRequests": 1,
+          "sessionTimeout": 30000,
+          "heartbeatInterval": 3000
         }
       },
       "name": "Kafka Trigger - Orders",
@@ -18,7 +21,7 @@
     },
     {
       "parameters": {
-        "functionCode": "// Parse order from Kafka message\nconst kafkaMessage = $input.item.json;\nconst order = JSON.parse(kafkaMessage.value);\n\n// Map to NetSuite Sales Order format\nconst netsuiteOrder = {\n  entity: {\n    id: order.customer_id  // NetSuite customer internal ID\n  },\n  tranDate: order.order_date || new Date().toISOString().split('T')[0],\n  otherRefNum: order.external_order_id,  // PO number\n  memo: order.notes || 'Created via integration',\n  custbody_source_system: 'Samsara',  // Custom field\n  item: {\n    items: order.line_items.map(item => ({\n      item: { id: item.netsuite_item_id },\n      quantity: item.quantity,\n      rate: item.unit_price,\n      amount: item.quantity * item.unit_price,\n      description: item.description\n    }))\n  },\n  // Shipping address\n  shipAddress: order.shipping_address ? {\n    addressee: order.shipping_address.name,\n    addr1: order.shipping_address.street1,\n    addr2: order.shipping_address.street2,\n    city: order.shipping_address.city,\n    state: order.shipping_address.state,\n    zip: order.shipping_address.zip,\n    country: order.shipping_address.country\n  } : null\n};\n\nreturn {\n  json: {\n    netsuite_payload: netsuiteOrder,\n    original_order: order\n  }\n};"
+        "functionCode": "// Parse order from Kafka and map to NetSuite sales order payload.\nconst kafkaMessage = $input.item.json;\nconst order = typeof kafkaMessage.value === 'string' ? JSON.parse(kafkaMessage.value) : kafkaMessage.value;\n\nif (!order || !order.customer_id || !Array.isArray(order.line_items)) {\n  throw new Error('invalid order payload: missing customer_id or line_items');\n}\n\nconst netsuiteOrder = {\n  entity: { id: order.customer_id },\n  tranDate: order.order_date || new Date().toISOString().split('T')[0],\n  otherRefNum: order.external_order_id,\n  memo: order.notes || 'Created via integration',\n  custbody_source_system: order.source || 'gateway',\n  item: {\n    items: order.line_items.map(item => ({\n      item: { id: item.netsuite_item_id },\n      quantity: item.quantity,\n      rate: item.unit_price,\n      amount: item.quantity * item.unit_price,\n      description: item.description\n    }))\n  },\n  shipAddress: order.shipping_address ? {\n    addressee: order.shipping_address.name,\n    addr1: order.shipping_address.street1,\n    addr2: order.shipping_address.street2,\n    city: order.shipping_address.city,\n    state: order.shipping_address.state,\n    zip: order.shipping_address.zip,\n    country: order.shipping_address.country\n  } : null\n};\n\nreturn {\n  json: {\n    netsuite_payload: netsuiteOrder,\n    original_order: order,\n    retry_count: order._retry_count || 0,\n    max_retries: 5\n  }\n};"
       },
       "name": "Transform to NetSuite Format",
       "type": "n8n-nodes-base.function",
@@ -33,9 +36,13 @@
         "nodeCredentialType": "netSuiteOAuth2Api",
         "sendBody": true,
         "specifyBody": "json",
-        "jsonBody": "={{ $json.netsuite_payload }}",
+        "jsonBody": "={{ JSON.stringify($json.netsuite_payload) }}",
         "options": {
-          "timeout": 30000
+          "timeout": 30000,
+          "retry": {
+            "maxTries": 3,
+            "waitBetweenTries": 2000
+          }
         }
       },
       "name": "Create Sales Order in NetSuite",
@@ -45,7 +52,7 @@
     },
     {
       "parameters": {
-        "functionCode": "// Extract NetSuite response\nconst response = $input.item.json;\nconst original = $input.item.json.original_order;\n\nreturn {\n  json: {\n    success: true,\n    netsuite_sales_order_id: response.id,\n    netsuite_order_number: response.tranId,\n    external_order_id: original.external_order_id,\n    timestamp: new Date().toISOString()\n  }\n};"
+        "functionCode": "const response = $input.item.json;\nconst original = response.original_order || {};\nreturn {\n  json: {\n    success: true,\n    netsuite_sales_order_id: response.id,\n    netsuite_order_number: response.tranId,\n    external_order_id: original.external_order_id,\n    timestamp: new Date().toISOString()\n  }\n};"
       },
       "name": "Format Success Response",
       "type": "n8n-nodes-base.function",
@@ -54,27 +61,26 @@
     },
     {
       "parameters": {
-        "method": "POST",
-        "url": "http://redpanda:28082/topics/netsuite-updates",
-        "authentication": "none",
-        "sendBody": true,
-        "bodyParameters": {
-          "parameters": [
-            {
-              "name": "records",
-              "value": "=[{\"value\": {{ $json }}}]"
-            }
-          ]
+        "operation": "sendMessage",
+        "topic": "netsuite-updates",
+        "sendInputData": false,
+        "jsonMessage": "={{ JSON.stringify($json) }}",
+        "options": {
+          "acks": -1,
+          "compression": "gzip"
         }
       },
       "name": "Confirm to Kafka",
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4,
-      "position": [1050, 300]
+      "type": "n8n-nodes-base.kafka",
+      "typeVersion": 1,
+      "position": [1050, 300],
+      "credentials": {
+        "kafka": { "id": "redpanda", "name": "Redpanda (internal)" }
+      }
     },
     {
       "parameters": {
-        "functionCode": "// Handle NetSuite API errors\nconst error = $input.item.json;\nconst original = $input.item.json.original_order || {};\n\nreturn {\n  json: {\n    workflow: 'netsuite-create-sales-order',\n    error_message: error.message || error['o:errorDetails']?.[0]?.detail || 'Unknown error',\n    error_code: error['o:errorDetails']?.[0]?.['o:errorCode'],\n    netsuite_account: process.env.NETSUITE_ACCOUNT_ID,\n    original_order_id: original.external_order_id,\n    timestamp: new Date().toISOString(),\n    retry_count: (original.retry_count || 0) + 1,\n    should_retry: error.status === 429 || error.status >= 500,  // Retry on rate limit or server errors\n    full_error: error\n  }\n};"
+        "functionCode": "// Normalize NetSuite error and decide retry vs DLQ.\nconst error = $input.item.json;\nconst original = error.original_order || {};\nconst retryCount = (error.retry_count || 0);\nconst maxRetries = error.max_retries || 5;\nconst status = error.status || error.statusCode || 0;\nconst isTransient = status === 429 || (status >= 500 && status < 600);\nconst shouldRetry = isTransient && retryCount < maxRetries;\n\nreturn {\n  json: {\n    workflow: 'netsuite-create-sales-order',\n    error_message: error.message || error['o:errorDetails']?.[0]?.detail || 'Unknown error',\n    error_code: error['o:errorDetails']?.[0]?.['o:errorCode'] || status,\n    retry_count: retryCount,\n    max_retries: maxRetries,\n    should_retry: shouldRetry,\n    retry_delay_ms: Math.min(60000, 1000 * Math.pow(2, retryCount)) + Math.floor(Math.random() * 500),\n    original_order: { ...original, _retry_count: retryCount + 1 },\n    timestamp: new Date().toISOString()\n  }\n};"
       },
       "name": "Handle Error",
       "type": "n8n-nodes-base.function",
@@ -83,118 +89,97 @@
     },
     {
       "parameters": {
-        "method": "POST",
-        "url": "http://redpanda:28082/topics/errors-dlq",
-        "authentication": "none",
-        "sendBody": true,
-        "bodyParameters": {
-          "parameters": [
-            {
-              "name": "records",
-              "value": "=[{\"value\": {{ $json }}}]"
-            }
+        "conditions": {
+          "boolean": [
+            { "value1": "={{ $json.should_retry }}", "value2": true }
           ]
         }
       },
-      "name": "Send to DLQ",
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4,
+      "name": "Retry or DLQ?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
       "position": [1050, 500]
     },
     {
       "parameters": {
-        "conditions": {
-          "boolean": [
-            {
-              "value1": "={{ $json.should_retry }}",
-              "value2": true
-            },
-            {
-              "value1": "={{ $json.retry_count }}",
-              "operation": "smaller",
-              "value2": 3
-            }
-          ]
+        "amount": "={{ $json.retry_delay_ms }}",
+        "unit": "milliseconds"
+      },
+      "name": "Backoff",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1,
+      "position": [1250, 440]
+    },
+    {
+      "parameters": {
+        "operation": "sendMessage",
+        "topic": "orders",
+        "sendInputData": false,
+        "jsonMessage": "={{ JSON.stringify($json.original_order) }}",
+        "options": {
+          "acks": -1,
+          "compression": "gzip"
         }
       },
-      "name": "Should Retry?",
-      "type": "n8n-nodes-base.if",
+      "name": "Requeue on Orders",
+      "type": "n8n-nodes-base.kafka",
       "typeVersion": 1,
-      "position": [1050, 600]
+      "position": [1450, 440],
+      "credentials": {
+        "kafka": { "id": "redpanda", "name": "Redpanda (internal)" }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "sendMessage",
+        "topic": "errors-dlq",
+        "sendInputData": false,
+        "jsonMessage": "={{ JSON.stringify($json) }}",
+        "options": {
+          "acks": -1,
+          "compression": "gzip"
+        }
+      },
+      "name": "Send to DLQ",
+      "type": "n8n-nodes-base.kafka",
+      "typeVersion": 1,
+      "position": [1250, 560],
+      "credentials": {
+        "kafka": { "id": "redpanda", "name": "Redpanda (internal)" }
+      }
     }
   ],
   "connections": {
     "Kafka Trigger - Orders": {
-      "main": [
-        [
-          {
-            "node": "Transform to NetSuite Format",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
+      "main": [[{ "node": "Transform to NetSuite Format", "type": "main", "index": 0 }]]
     },
     "Transform to NetSuite Format": {
-      "main": [
-        [
-          {
-            "node": "Create Sales Order in NetSuite",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
+      "main": [[{ "node": "Create Sales Order in NetSuite", "type": "main", "index": 0 }]]
     },
     "Create Sales Order in NetSuite": {
-      "main": [
-        [
-          {
-            "node": "Format Success Response",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ],
-      "error": [
-        [
-          {
-            "node": "Handle Error",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
+      "main":  [[{ "node": "Format Success Response", "type": "main", "index": 0 }]],
+      "error": [[{ "node": "Handle Error", "type": "main", "index": 0 }]]
     },
     "Format Success Response": {
-      "main": [
-        [
-          {
-            "node": "Confirm to Kafka",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
+      "main": [[{ "node": "Confirm to Kafka", "type": "main", "index": 0 }]]
     },
     "Handle Error": {
+      "main": [[{ "node": "Retry or DLQ?", "type": "main", "index": 0 }]]
+    },
+    "Retry or DLQ?": {
       "main": [
-        [
-          {
-            "node": "Send to DLQ",
-            "type": "main",
-            "index": 0
-          },
-          {
-            "node": "Should Retry?",
-            "type": "main",
-            "index": 0
-          }
-        ]
+        [{ "node": "Backoff", "type": "main", "index": 0 }],
+        [{ "node": "Send to DLQ", "type": "main", "index": 0 }]
       ]
+    },
+    "Backoff": {
+      "main": [[{ "node": "Requeue on Orders", "type": "main", "index": 0 }]]
     }
   },
   "settings": {
-    "executionOrder": "v1"
+    "executionOrder": "v1",
+    "saveDataErrorExecution": "all",
+    "saveDataSuccessExecution": "none",
+    "timezone": "America/Los_Angeles"
   }
 }

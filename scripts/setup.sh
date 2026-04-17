@@ -1,56 +1,58 @@
-#!/bin/bash
+#!/usr/bin/env bash
+# First-time setup: verify prereqs, generate TLS cert for local dev, start stack.
+set -euo pipefail
 
-echo "🚀 Gateway Setup Script"
+echo "🚀 Gateway Setup"
 echo ""
 
-# Check if Docker is installed
-if ! command -v docker &> /dev/null; then
-    echo "❌ Docker is not installed."
-    echo "   Please install Docker Desktop:"
-    echo "   - Mac: https://www.docker.com/products/docker-desktop/"
-    echo "   - Windows: https://www.docker.com/products/docker-desktop/"
-    exit 1
+command -v docker >/dev/null || { echo "❌ Docker not installed"; exit 1; }
+docker info >/dev/null 2>&1 || { echo "❌ Docker daemon not running"; exit 1; }
+echo "✅ Docker: $(docker --version)"
+
+# .env
+if [ ! -f .env ]; then
+  echo "📝 .env not found; copying from .env.example"
+  cp .env.example .env
+  echo "   ⚠️  Edit .env and replace CHANGE_ME values before going to prod."
 fi
 
-echo "✅ Docker is installed: $(docker --version)"
-
-# Check if Docker is running
-if ! docker info &> /dev/null; then
-    echo "❌ Docker daemon is not running."
-    echo "   Please start Docker Desktop and try again."
-    exit 1
+# TLS cert for local dev
+if [ ! -f config/kong/certs/server.crt ]; then
+  echo "🔐 Generating self-signed TLS cert for local dev (1 year)..."
+  mkdir -p config/kong/certs
+  openssl req -x509 -newkey rsa:4096 -sha256 -days 365 -nodes \
+    -keyout config/kong/certs/server.key \
+    -out    config/kong/certs/server.crt \
+    -subj "/CN=localhost" 2>/dev/null
+  chmod 600 config/kong/certs/server.key
+  echo "   ⚠️  Replace with a real cert (ACM/Let's Encrypt) before production."
 fi
 
-echo "✅ Docker daemon is running"
 echo ""
-
-# Start services
 echo "🔧 Starting services..."
-docker compose up -d
+docker compose up -d --wait --wait-timeout 180
 
 echo ""
-echo "⏳ Waiting for services to become healthy..."
-sleep 10
+echo "📦 Creating Redpanda topics..."
+./scripts/create-topics.sh || true
 
-# Check service health
 echo ""
-echo "📊 Service Status:"
+echo "📊 Service status:"
 docker compose ps
 
 echo ""
-echo "🎉 Setup complete!"
+echo "🎉 Done."
 echo ""
-echo "Access your services:"
-echo "  - Kong Admin:         http://localhost:8001"
-echo "  - Kong Manager:       http://localhost:8002"
-echo "  - n8n:               http://localhost:5678 (admin/admin)"
-echo "  - Redpanda Console:  http://localhost:8080"
-echo "  - Grafana:           http://localhost:3000 (admin/admin)"
+echo "Public proxy (Kong):"
+echo "  https://localhost:8443/{samsara,netsuite,wms,unigroup}   (requires X-API-Key)"
 echo ""
-echo "Next steps:"
-echo "  1. Configure Kong routes: ./scripts/kong-setup.sh"
-echo "  2. Create Redpanda topics: ./scripts/create-topics.sh"
-echo "  3. Build n8n workflows in the UI"
+echo "Admin UIs (127.0.0.1 only; tunnel via SSH if remote):"
+echo "  Kong Admin      http://127.0.0.1:8001"
+echo "  Kong Manager    http://127.0.0.1:8002"
+echo "  n8n             http://127.0.0.1:5678"
+echo "  Redpanda        http://127.0.0.1:8080"
+echo "  Grafana         http://127.0.0.1:3002"
+echo "  Prometheus      http://127.0.0.1:9090"
+echo "  Alertmanager    http://127.0.0.1:9093"
 echo ""
-echo "View logs: docker compose logs -f"
-echo "Stop services: docker compose down"
+echo "Run ./scripts/test.sh to smoke-test."

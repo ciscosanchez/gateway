@@ -55,7 +55,7 @@
     {
       "parameters": {
         "method": "POST",
-        "url": "http://redpanda:28082/topics/fleet-dashboard",
+        "url": "http://redpanda-0:28082/topics/fleet-dashboard",
         "authentication": "none",
         "sendHeaders": true,
         "headerParameters": {

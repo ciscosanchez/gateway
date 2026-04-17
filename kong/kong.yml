@@ -1,0 +1,229 @@
+_format_version: "3.0"
+_transform: true
+
+# ============================================================================
+# Kong Declarative Configuration
+# ----------------------------------------------------------------------------
+# Applies to every route:
+#   - key-auth              : X-API-Key required
+#   - rate-limiting         : 100 req/min, 5000 req/hour (redis-backed, global)
+#   - request-size-limiting : 10 MB cap
+#   - request-termination   : disabled by default (uncomment for maintenance)
+#   - cors                  : pinned origins (override per env)
+#   - correlation-id        : adds X-Request-Id, forwarded upstream
+#   - response-transformer  : hardened security headers
+#   - prometheus            : per-route metrics
+#   - ip-restriction        : allowlist (set per env)
+# Samsara route additionally runs an HMAC pre-function plugin that verifies
+# X-Samsara-Signature before the request reaches n8n.
+# ============================================================================
+
+# -----------------------------
+# Upstream services (internal)
+# -----------------------------
+services:
+  - name: samsara-service
+    url: http://n8n:5678/webhook/samsara
+    retries: 2
+    connect_timeout: 5000
+    read_timeout: 30000
+    write_timeout: 30000
+    tags: [samsara, webhook]
+    routes:
+      - name: samsara-route
+        paths: ["/samsara"]
+        methods: [POST, OPTIONS]
+        protocols: [https]
+        strip_path: false
+        preserve_host: false
+        https_redirect_status_code: 301
+        tags: [samsara]
+        plugins:
+          # 1) HMAC signature verification (Samsara-specific)
+          - name: pre-function
+            config:
+              access:
+                - |
+                  local openssl_hmac = require "resty.openssl.hmac"
+                  local str = require "resty.string"
+                  local secret = os.getenv("SAMSARA_WEBHOOK_SECRET")
+                  if not secret or secret == "" or secret:match("^REPLACE_ME") then
+                    kong.log.err("SAMSARA_WEBHOOK_SECRET not configured")
+                    return kong.response.exit(500, { message = "server misconfigured" })
+                  end
+                  local sig = kong.request.get_header("X-Samsara-Signature")
+                  if not sig then
+                    return kong.response.exit(401, { message = "missing signature" })
+                  end
+                  local body = kong.request.get_raw_body() or ""
+                  local h = openssl_hmac.new(secret, "sha256")
+                  h:update(body)
+                  local digest = str.to_hex(h:final())
+                  -- constant-time compare
+                  if #sig ~= #digest then
+                    return kong.response.exit(401, { message = "bad signature" })
+                  end
+                  local diff = 0
+                  for i = 1, #sig do
+                    diff = bit.bor(diff, bit.bxor(sig:byte(i), digest:byte(i)))
+                  end
+                  if diff ~= 0 then
+                    return kong.response.exit(401, { message = "bad signature" })
+                  end
+
+  - name: netsuite-service
+    url: http://n8n:5678/webhook/netsuite
+    retries: 2
+    connect_timeout: 5000
+    read_timeout: 60000
+    write_timeout: 60000
+    tags: [netsuite]
+    routes:
+      - name: netsuite-route
+        paths: ["/netsuite"]
+        methods: [POST, GET, OPTIONS]
+        protocols: [https]
+        strip_path: false
+        https_redirect_status_code: 301
+        tags: [netsuite]
+
+  - name: wms-service
+    url: http://n8n:5678/webhook/wms
+    retries: 2
+    connect_timeout: 5000
+    read_timeout: 30000
+    write_timeout: 30000
+    tags: [wms]
+    routes:
+      - name: wms-route
+        paths: ["/wms"]
+        methods: [POST, GET, OPTIONS]
+        protocols: [https]
+        strip_path: false
+        https_redirect_status_code: 301
+        tags: [wms]
+
+  - name: unigroup-service
+    url: http://n8n:5678/webhook/unigroup
+    retries: 2
+    connect_timeout: 5000
+    read_timeout: 30000
+    write_timeout: 30000
+    tags: [unigroup, edi]
+    routes:
+      - name: unigroup-route
+        paths: ["/unigroup"]
+        methods: [POST, GET, OPTIONS]
+        protocols: [https]
+        strip_path: false
+        https_redirect_status_code: 301
+        tags: [unigroup, edi]
+
+# -----------------------------
+# Consumers & API keys
+# -----------------------------
+# Real keys should be loaded from secret manager and injected via a
+# `deck sync` job or Kong Admin API at deploy time. These placeholders
+# exist only so the stack boots. Rotate before pointing real traffic here.
+consumers:
+  - username: samsara-client
+    tags: [samsara]
+    keyauth_credentials:
+      - key: REPLACE_ME_samsara_api_key
+  - username: netsuite-client
+    tags: [netsuite]
+    keyauth_credentials:
+      - key: REPLACE_ME_netsuite_api_key
+  - username: wms-client
+    tags: [wms]
+    keyauth_credentials:
+      - key: REPLACE_ME_wms_api_key
+  - username: unigroup-client
+    tags: [unigroup]
+    keyauth_credentials:
+      - key: REPLACE_ME_unigroup_api_key
+
+# -----------------------------
+# Global plugins - applied to every route unless overridden
+# -----------------------------
+plugins:
+  # Metrics for Prometheus scrape at /metrics on the admin port
+  - name: prometheus
+    config:
+      status_code_metrics: true
+      latency_metrics: true
+      bandwidth_metrics: true
+      upstream_health_metrics: true
+
+  # Correlation / request id for log tracing
+  - name: correlation-id
+    config:
+      header_name: X-Request-Id
+      generator: uuid
+      echo_downstream: true
+
+  # Auth on every route
+  - name: key-auth
+    config:
+      key_names: ["X-API-Key", "apikey"]
+      hide_credentials: true
+      key_in_header: true
+      key_in_query: false
+      key_in_body: false
+
+  # Shared-counter rate limiting via Redis
+  - name: rate-limiting
+    config:
+      minute: 100
+      hour: 5000
+      policy: redis
+      fault_tolerant: true
+      hide_client_headers: false
+      redis_host: redis
+      redis_port: 6379
+      redis_password: "${REDIS_PASSWORD}"    # expanded by Kong env substitution
+      redis_timeout: 2000
+      redis_database: 0
+
+  # Hard cap on body size (defense in depth - nginx also caps at 10m)
+  - name: request-size-limiting
+    config:
+      allowed_payload_size: 10          # MB
+      size_unit: megabytes
+      require_content_length: false
+
+  # CORS - pin this to actual caller origins per env
+  - name: cors
+    config:
+      origins: ["https://*.internal.gateway.example.com"]
+      methods: [GET, POST, PUT, DELETE, OPTIONS]
+      headers: [Accept, Content-Type, Authorization, X-API-Key, X-Request-Id, X-Samsara-Signature]
+      exposed_headers: [X-Request-Id, X-RateLimit-Remaining-Minute, X-RateLimit-Limit-Minute]
+      credentials: false
+      max_age: 3600
+      preflight_continue: false
+
+  # Security headers
+  - name: response-transformer
+    config:
+      add:
+        headers:
+          - "Strict-Transport-Security:max-age=31536000; includeSubDomains; preload"
+          - "X-Content-Type-Options:nosniff"
+          - "X-Frame-Options:DENY"
+          - "Referrer-Policy:no-referrer"
+          - "Permissions-Policy:geolocation=(), microphone=(), camera=()"
+          - "Content-Security-Policy:default-src 'none'; frame-ancestors 'none'"
+      remove:
+        headers: ["Server", "X-Powered-By"]
+
+  # IP allowlist - replace with real CIDRs per integration.
+  # Comment out if you truly need a fully public endpoint.
+  - name: ip-restriction
+    config:
+      allow:
+        - "10.0.0.0/8"
+        - "172.16.0.0/12"
+        - "192.168.0.0/16"
+      status: 403
+      message: "source ip not allowed"

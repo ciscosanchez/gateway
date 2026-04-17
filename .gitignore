@@ -1,20 +1,28 @@
-# Environment variables with secrets (NEVER COMMIT THESE)
+# Environment variables with secrets (NEVER COMMIT)
 .env
 .env.local
 .env.production
+.env.*.local
 *.key
 *.pem
+*.crt
+!**/.gitkeep
 secrets/
+config/kong/certs/*
 
-# Docker volumes
+# Docker volumes / local data
 postgres-data/
 n8n-data/
 grafana-data/
+data/
 
 # Backups (contain sensitive data)
 backups/
 *.sql
+*.sql.gz
 *.tar.gz
+*.age
+*.gpg
 
 # Logs
 logs/
@@ -34,3 +42,5 @@ Thumbs.db
 tmp/
 temp/
 *.tmp
+.cache/
+.abacusai/

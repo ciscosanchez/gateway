@@ -6,7 +6,9 @@
         "httpMethod": "POST",
         "path": "samsara",
         "responseMode": "responseNode",
-        "options": {}
+        "options": {
+          "rawBody": false
+        }
       },
       "name": "Samsara Webhook",
       "type": "n8n-nodes-base.webhook",
@@ -16,47 +18,48 @@
     },
     {
       "parameters": {
-        "functionCode": "// Parse Samsara webhook event\nconst payload = $input.item.json;\n\n// Extract and normalize data\nconst event = {\n  source: 'samsara',\n  event_type: payload.eventType,\n  timestamp: payload.time || new Date().toISOString(),\n  vehicle: {\n    id: payload.data?.vehicle?.id,\n    name: payload.data?.vehicle?.name\n  },\n  driver: {\n    id: payload.data?.driver?.id,\n    name: payload.data?.driver?.name\n  },\n  location: {\n    lat: payload.data?.location?.latitude,\n    lng: payload.data?.location?.longitude,\n    address: payload.data?.location?.reverseGeo?.formattedLocation,\n    heading: payload.data?.location?.heading,\n    speed: payload.data?.location?.speedMilesPerHour\n  },\n  geofence: {\n    id: payload.data?.geofence?.id,\n    name: payload.data?.geofence?.name\n  },\n  raw_payload: payload\n};\n\nreturn { json: event };"
+        "functionCode": "// Parse Samsara webhook event.\n// Upstream Kong validates X-Samsara-Signature HMAC before we get here.\n// We still strip PII before publishing to Kafka.\nconst payload = $input.item.json;\n\nconst redact = (s) => (s ? 'REDACTED' : undefined);\n\nconst event = {\n  source: 'samsara',\n  event_type: payload.eventType,\n  event_id: payload.eventId,\n  timestamp: payload.time || new Date().toISOString(),\n  received_at: new Date().toISOString(),\n  vehicle: {\n    id: payload.data?.vehicle?.id,\n    name: payload.data?.vehicle?.name\n  },\n  driver: {\n    // Keep ID for correlation, redact PII\n    id: payload.data?.driver?.id,\n    name: redact(payload.data?.driver?.name)\n  },\n  location: {\n    lat: payload.data?.location?.latitude,\n    lng: payload.data?.location?.longitude,\n    heading: payload.data?.location?.heading,\n    speed: payload.data?.location?.speedMilesPerHour\n    // reverseGeo / formattedLocation omitted (PII-adjacent)\n  },\n  geofence: {\n    id: payload.data?.geofence?.id,\n    name: payload.data?.geofence?.name\n  },\n  // Partition key for Kafka - ordering per vehicle\n  _key: String(payload.data?.vehicle?.id || payload.eventId || 'unknown')\n};\n\nreturn { json: event };"
       },
-      "name": "Parse Event",
+      "name": "Parse & Redact",
       "type": "n8n-nodes-base.function",
       "typeVersion": 1,
       "position": [450, 300]
     },
     {
       "parameters": {
-        "method": "POST",
-        "url": "http://redpanda:28082/topics/samsara-events",
-        "authentication": "none",
-        "sendHeaders": true,
-        "headerParameters": {
-          "parameters": [
-            {
-              "name": "Content-Type",
-              "value": "application/json"
-            }
-          ]
-        },
-        "sendBody": true,
-        "bodyParameters": {
-          "parameters": [
-            {
-              "name": "records",
-              "value": "=[{\"value\": {{ $json }}}]"
-            }
-          ]
-        },
-        "options": {}
+        "operation": "sendMessage",
+        "topic": "samsara-events",
+        "sendInputData": false,
+        "jsonMessage": "={{ JSON.stringify($json) }}",
+        "options": {
+          "acks": -1,
+          "compression": "gzip",
+          "maxInFlightRequests": 5,
+          "headers": {
+            "content-type": "application/json",
+            "schema-version": "1"
+          },
+          "useSchemaRegistry": false
+        }
       },
-      "name": "Send to Kafka",
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4,
-      "position": [650, 300]
+      "name": "Produce to Kafka",
+      "type": "n8n-nodes-base.kafka",
+      "typeVersion": 1,
+      "position": [650, 300],
+      "credentials": {
+        "kafka": {
+          "id": "redpanda",
+          "name": "Redpanda (internal)"
+        }
+      }
     },
     {
       "parameters": {
         "respondWith": "json",
-        "responseBody": "={{ { \"success\": true, \"message\": \"Event received\", \"event_type\": $json.event_type, \"timestamp\": $now } }}"
+        "responseBody": "={{ { \"success\": true, \"event_id\": $json.event_id, \"event_type\": $json.event_type } }}",
+        "options": {
+          "responseCode": 202
+        }
       },
       "name": "Success Response",
       "type": "n8n-nodes-base.respondToWebhook",
@@ -65,95 +68,73 @@
     },
     {
       "parameters": {
-        "method": "POST",
-        "url": "http://redpanda:28082/topics/errors-dlq",
-        "authentication": "none",
-        "sendBody": true,
-        "bodyParameters": {
-          "parameters": [
-            {
-              "name": "records",
-              "value": "=[{\"value\": { \"workflow\": \"samsara-webhook\", \"error\": \"{{ $json.message }}\", \"timestamp\": \"{{ $now }}\", \"original_data\": {{ $json }} }}]"
-            }
-          ]
-        },
-        "options": {}
+        "functionCode": "// Build DLQ record\nconst err = $input.item.json;\nreturn {\n  json: {\n    workflow: 'samsara-webhook-to-kafka',\n    error: err.message || err.error || 'unknown',\n    timestamp: new Date().toISOString(),\n    original: err\n  }\n};"
       },
-      "name": "Log Error",
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4,
+      "name": "Build DLQ Record",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
       "position": [650, 500]
     },
     {
       "parameters": {
-        "respondWith": "json",
-        "responseBody": "={{ { \"success\": false, \"error\": \"Failed to process event\" } }}",
+        "operation": "sendMessage",
+        "topic": "errors-dlq",
+        "sendInputData": false,
+        "jsonMessage": "={{ JSON.stringify($json) }}",
         "options": {
-          "responseCode": "500"
+          "acks": -1,
+          "compression": "gzip"
+        }
+      },
+      "name": "Send to DLQ",
+      "type": "n8n-nodes-base.kafka",
+      "typeVersion": 1,
+      "position": [850, 500],
+      "credentials": {
+        "kafka": {
+          "id": "redpanda",
+          "name": "Redpanda (internal)"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { \"success\": false, \"error\": \"processing failed\" } }}",
+        "options": {
+          "responseCode": 500
         }
       },
       "name": "Error Response",
       "type": "n8n-nodes-base.respondToWebhook",
       "typeVersion": 1,
-      "position": [850, 500]
+      "position": [1050, 500]
     }
   ],
   "connections": {
     "Samsara Webhook": {
-      "main": [
-        [
-          {
-            "node": "Parse Event",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
+      "main": [[{ "node": "Parse & Redact", "type": "main", "index": 0 }]]
     },
-    "Parse Event": {
-      "main": [
-        [
-          {
-            "node": "Send to Kafka",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
+    "Parse & Redact": {
+      "main": [[{ "node": "Produce to Kafka", "type": "main", "index": 0 }]]
     },
-    "Send to Kafka": {
-      "main": [
-        [
-          {
-            "node": "Success Response",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ],
-      "error": [
-        [
-          {
-            "node": "Log Error",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
+    "Produce to Kafka": {
+      "main":  [[{ "node": "Success Response",  "type": "main", "index": 0 }]],
+      "error": [[{ "node": "Build DLQ Record", "type": "main", "index": 0 }]]
     },
-    "Log Error": {
-      "main": [
-        [
-          {
-            "node": "Error Response",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
+    "Build DLQ Record": {
+      "main": [[{ "node": "Send to DLQ", "type": "main", "index": 0 }]]
+    },
+    "Send to DLQ": {
+      "main": [[{ "node": "Error Response", "type": "main", "index": 0 }]]
     }
   },
   "settings": {
-    "executionOrder": "v1"
+    "executionOrder": "v1",
+    "saveDataErrorExecution": "all",
+    "saveDataSuccessExecution": "none",
+    "saveExecutionProgress": false,
+    "timezone": "America/Los_Angeles",
+    "errorWorkflow": ""
   }
 }

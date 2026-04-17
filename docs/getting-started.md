@@ -1,213 +1,110 @@
-# Getting Started Checklist
+# Getting Started
 
 ## Prerequisites
 
-- [ ] Install Docker Desktop
-  - Mac: https://www.docker.com/products/docker-desktop/
-  - Windows: https://www.docker.com/products/docker-desktop/
-  - Linux: `sudo apt install docker.io`
+- Docker (Engine 20.10+) with Compose V2
+- `openssl` (to generate the local-dev TLS cert)
+- `age` (optional, for encrypted backups): `brew install age`
 
-- [ ] Start Docker Desktop (verify icon in system tray/menu bar)
-
-## Setup Steps
-
-### 1. Start the Stack
+## First-time setup
 
 ```bash
-# Start all services
-./scripts/setup.sh
-
-# Or manually:
-docker compose up -d
+cp .env.example .env           # then edit .env - replace every CHANGE_ME
+./scripts/setup.sh             # generates dev TLS cert, starts stack, creates topics
+./scripts/test.sh              # smoke test
 ```
 
-**Wait 1-2 minutes** for all services to become healthy.
+`setup.sh` does four things:
 
-### 2. Verify Services
+1. Validates Docker is running.
+2. Generates a self-signed TLS cert into `config/kong/certs/` (dev only — replace in prod).
+3. Runs `docker compose up -d --wait`.
+4. Creates Redpanda topics with `replication_factor=3`, `min.insync.replicas=2`.
+
+## Architecture at a glance
+
+```
+Internet ──► Kong (443, key-auth + HMAC + rate-limit) ──► n8n main
+                                                           └──► n8n-worker × N ──► Redpanda (3 brokers)
+                                                                                    │
+                                                                                    └──► n8n consumers ──► NetSuite / WMS / …
+Observability: Prometheus + Alertmanager + Grafana + Loki + Promtail + node_exporter + cAdvisor
+```
+
+Kong runs in **DB-less mode**. Routes, plugins, consumers and API keys live in `kong/kong.yml`. Edit that file, then:
 
 ```bash
-docker compose ps
+docker compose restart kong          # or
+./scripts/kong-setup.sh              # hot-reload via admin API on 127.0.0.1:8001
 ```
 
-All services should show "Up (healthy)".
+## Endpoints
 
-### 3. Access UIs
+**Public (via Kong):**
+- `POST https://<host>/samsara`   — requires `X-API-Key` + `X-Samsara-Signature` (HMAC SHA-256 of body)
+- `POST https://<host>/netsuite`  — requires `X-API-Key`
+- `POST https://<host>/wms`       — requires `X-API-Key`
+- `POST https://<host>/unigroup`  — requires `X-API-Key`
 
-Open in your browser:
+**Admin UIs (bound to `127.0.0.1` only; use an SSH tunnel from your workstation):**
 
-- [ ] n8n: http://localhost:5678 (admin/admin)
-- [ ] Kong Manager: http://localhost:8002
-- [ ] Redpanda Console: http://localhost:8080
-- [ ] Grafana: http://localhost:3000 (admin/admin)
+| Service        | URL                         |
+|----------------|-----------------------------|
+| Kong Admin     | http://127.0.0.1:8001        |
+| Kong Manager   | http://127.0.0.1:8002        |
+| n8n            | http://127.0.0.1:5678        |
+| Redpanda UI    | http://127.0.0.1:8080        |
+| Grafana        | http://127.0.0.1:3002        |
+| Prometheus     | http://127.0.0.1:9090        |
+| Alertmanager   | http://127.0.0.1:9093        |
+| Loki           | http://127.0.0.1:3100        |
 
-### 4. Configure Kong Routes
+SSH tunnel example:
+```bash
+ssh -L 8001:127.0.0.1:8001 -L 5678:127.0.0.1:5678 -L 3002:127.0.0.1:3002 prod-host
+```
+
+## Testing a route
+
+Rotate the placeholder API keys in `kong/kong.yml` first, then:
 
 ```bash
-./scripts/kong-setup.sh
+# HMAC-sign a Samsara test payload
+BODY='{"eventType":"GeofenceEntry","data":{"vehicle":{"id":"v1"}}}'
+SIG=$(printf '%s' "$BODY" | openssl dgst -sha256 -hmac "$SAMSARA_WEBHOOK_SECRET" -hex | awk '{print $2}')
+
+curl -sk https://localhost:8443/samsara \
+  -H "X-API-Key: $SAMSARA_API_KEY" \
+  -H "X-Samsara-Signature: $SIG" \
+  -H "Content-Type: application/json" \
+  -d "$BODY"
 ```
 
-This creates routes for:
-- `/samsara` → n8n webhooks
-- `/netsuite` → n8n webhooks
-- `/wms` → n8n webhooks
-- `/unigroup` → n8n webhooks
-
-### 5. Create Kafka Topics
+## Scaling n8n workers
 
 ```bash
-./scripts/create-topics.sh
+docker compose up -d --scale n8n-worker=4
 ```
 
-This creates topics:
-- `samsara-events`
-- `orders`
-- `inventory`
-- `edi-outbound`
-- `netsuite-updates`
-- `wms-events`
-- `errors-dlq` (dead letter queue)
+Workers pull jobs from Redis (queue mode). The main `n8n` container only handles
+the web/API/webhook frontends.
 
-### 6. Test Hello World
+## Backups
 
 ```bash
-# Test Kong is proxying
-curl http://localhost:8000/samsara
-
-# You should get a 404 from n8n (webhook not yet created)
-# This is expected! It means Kong → n8n routing works.
+./scripts/backup.sh                   # encrypted with age (if BACKUP_AGE_RECIPIENT set)
+./scripts/restore.sh ./backups/<ts>   # decrypt + restore
 ```
 
-## Next Steps
+A cron template is provided at `scripts/cron/gateway-crontab`.
 
-### For NetSuite Integration
-
-- [ ] Read `docs/netsuite-integration.md`
-- [ ] Enable Token-Based Auth in NetSuite
-- [ ] Create integration record and access tokens
-- [ ] Add credentials to `.env` file
-- [ ] Create n8n workflow to test NetSuite API
-
-### For Samsara Integration
-
-- [ ] Get Samsara API token
-- [ ] Register webhook in Samsara dashboard
-- [ ] Point webhook to: `http://your-domain:8000/samsara`
-- [ ] Create n8n workflow to handle Samsara events
-- [ ] Test with Samsara webhook test tool
-
-### For WMS Integration
-
-- [ ] Document your WMS API
-- [ ] Create Kong route for WMS
-- [ ] Build n8n workflow: WMS → transform → NetSuite
-- [ ] Set up Kafka topic for WMS events
-
-### Build Your First Workflow
-
-1. Open n8n: http://localhost:5678
-2. Create new workflow
-3. Add "Webhook" trigger node
-   - Method: POST
-   - Path: `samsara`
-4. Add "HTTP Request" node
-   - Method: POST
-   - URL: `http://redpanda:28082/topics/samsara-events`
-   - Body: `{{ $json }}`
-5. Activate workflow
-6. Test:
-   ```bash
-   curl -X POST http://localhost:8000/samsara \
-     -H "Content-Type: application/json" \
-     -d '{"test": "data"}'
-   ```
-7. Check Redpanda Console to see the message
-
-## Troubleshooting
-
-### Docker daemon not running
-
-```
-Error: Cannot connect to the Docker daemon
-```
-
-**Fix**: Start Docker Desktop
-
-### Port already in use
-
-```
-Error: Bind for 0.0.0.0:8000 failed: port is already allocated
-```
-
-**Fix**: Change the port in `docker-compose.yml` or stop the conflicting service
-
-### Service unhealthy
+## Operational cheatsheet
 
 ```bash
-# Check logs
-docker compose logs kong
-docker compose logs n8n
-docker compose logs redpanda
-
-# Restart service
-docker compose restart kong
+docker compose ps                                # status
+docker compose logs -f kong n8n                  # tail
+docker compose restart kong                      # reload kong/kong.yml
+./scripts/test.sh                                # smoke test
+./scripts/validate-config.sh                     # preflight
+docker exec gateway-redpanda-0 rpk cluster health --brokers redpanda-0:29092
 ```
-
-### Reset everything
-
-```bash
-docker compose down -v
-docker compose up -d
-```
-
-## Daily Development Workflow
-
-```bash
-# Start services
-docker compose up -d
-
-# View logs
-docker compose logs -f
-
-# Stop services
-docker compose down
-
-# Restart a service
-docker compose restart n8n
-
-# Execute commands in containers
-docker exec -it gateway-redpanda rpk topic list
-docker exec -it gateway-postgres psql -U gateway -d gateway
-```
-
-## Resources
-
-- **Main README**: `README.md`
-- **NetSuite Guide**: `docs/netsuite-integration.md`
-- **Kong Docs**: https://docs.konghq.com/
-- **n8n Docs**: https://docs.n8n.io/
-- **Redpanda Docs**: https://docs.redpanda.com/
-
-## Support
-
-If you get stuck:
-
-1. Check the logs: `docker compose logs -f [service-name]`
-2. Check service health: `docker compose ps`
-3. Check Kong admin: http://localhost:8001
-4. Check Redpanda console: http://localhost:8080
-5. Restart the service: `docker compose restart [service-name]`
-
-## Production Readiness
-
-Before going to production:
-
-- [ ] Change all default passwords
-- [ ] Set up proper SSL/TLS certificates
-- [ ] Configure backup strategy for PostgreSQL
-- [ ] Set up HashiCorp Vault for secrets
-- [ ] Configure production-grade Redpanda cluster (3+ nodes)
-- [ ] Set up proper log aggregation
-- [ ] Configure alerting in Grafana
-- [ ] Review and harden security settings
-- [ ] Set resource limits in docker-compose
-- [ ] Document runbooks for common issues

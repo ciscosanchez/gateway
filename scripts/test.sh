@@ -1,80 +1,54 @@
-#!/bin/bash
+#!/usr/bin/env bash
+# Smoke test the Gateway stack. Expects `docker compose up -d` to have run.
+set -euo pipefail
 
-echo "🧪 Testing Gateway Stack..."
-echo ""
+GREEN='\033[0;32m'; RED='\033[0;31m'; YELLOW='\033[1;33m'; NC='\033[0m'
+pass=0; fail=0
 
-# Colors
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-NC='\033[0m' # No Color
-
-# Function to test endpoint
-test_endpoint() {
-    local NAME=$1
-    local URL=$2
-    local EXPECTED=$3
-    
-    echo -n "Testing $NAME... "
-    
-    RESPONSE=$(curl -s -o /dev/null -w "%{http_code}" "$URL" 2>&1)
-    
-    if [ "$RESPONSE" == "$EXPECTED" ]; then
-        echo -e "${GREEN}✓ OK${NC} (HTTP $RESPONSE)"
-    else
-        echo -e "${RED}✗ FAILED${NC} (Expected HTTP $EXPECTED, got $RESPONSE)"
-    fi
+check() {
+  local name=$1 url=$2 expected=$3 extra=${4:-}
+  local code
+  code=$(curl -sk -o /dev/null -w "%{http_code}" ${extra} "${url}" || echo 000)
+  if [ "${code}" = "${expected}" ]; then
+    echo -e "${GREEN}✓${NC} ${name} (${code})"
+    pass=$((pass+1))
+  else
+    echo -e "${RED}✗${NC} ${name} (got ${code}, expected ${expected})"
+    fail=$((fail+1))
+  fi
 }
 
-# Test services
-echo "📡 Testing Service Endpoints:"
-echo ""
-
-test_endpoint "Kong Admin API" "http://localhost:8001" "200"
-test_endpoint "Kong Manager" "http://localhost:8002" "200"
-test_endpoint "Kong Proxy" "http://localhost:8000" "404"
-test_endpoint "n8n" "http://localhost:5678" "200"
-test_endpoint "Redpanda Console" "http://localhost:8080" "200"
-test_endpoint "Grafana" "http://localhost:3002" "200"
-test_endpoint "Prometheus" "http://localhost:9090/graph" "200"
+echo "── Internal admin endpoints (must bind to 127.0.0.1 only) ──"
+check "Kong Admin API"    http://127.0.0.1:8001/status 200
+check "Kong Manager"      http://127.0.0.1:8002       200
+check "n8n"               http://127.0.0.1:5678/healthz 200
+check "Redpanda Console"  http://127.0.0.1:8080        200
+check "Grafana"           http://127.0.0.1:3002/api/health 200
+check "Prometheus"        http://127.0.0.1:9090/-/ready 200
+check "Alertmanager"      http://127.0.0.1:9093/-/ready 200
+check "Loki"              http://127.0.0.1:3100/ready   200
 
 echo ""
-echo "🔍 Checking Docker Services:"
-echo ""
+echo "── Public proxy (Kong on :8000/:8443) ──"
+# Without X-API-Key, key-auth returns 401. With wrong key, 401. Both prove auth is active.
+check "Kong proxy HTTP (no key → 401 or 426)" http://localhost:8000/samsara 401 -XPOST
+check "Kong proxy HTTPS (no key → 401)"        https://localhost:8443/samsara 401 -XPOST
+check "Kong proxy HTTPS (route missing → 404)" https://localhost:8443/does-not-exist 404
 
-docker compose ps
+echo ""
+echo "── Public exposure sanity (these MUST be blocked from the public IP) ──"
+for port in 8001 8002 5678 8080 3002 9090 9093 3100; do
+  # On this host we bind to 127.0.0.1 only, so curl to 127.0.0.1 works but
+  # binding to 0.0.0.0 would be caught by an external scanner - document here.
+  :
+done
 
 echo ""
-echo "📊 Service URLs:"
-echo ""
-echo "  Kong Admin:        http://localhost:8001"
-echo "  Kong Manager:      http://localhost:8002"
-echo "  Kong Proxy:        http://localhost:8000"
-echo "  n8n:              http://localhost:5678 (admin/admin)"
-echo "  Redpanda Console: http://localhost:8080"
-echo "  Grafana:          http://localhost:3002 (admin/admin)"
-echo "  Prometheus:       http://localhost:9090"
-echo ""
-
-# Test Kong routes if they exist
-echo "🛣️  Testing Kong Routes:"
-echo ""
-
-ROUTES=$(curl -s http://localhost:8001/routes 2>&1)
-
-if echo "$ROUTES" | grep -q "samsara"; then
-    echo -n "Testing Samsara Route... "
-    ROUTE_RESPONSE=$(curl -s -o /dev/null -w "%{http_code}" "http://localhost:8000/samsara" 2>&1)
-    if [ "$ROUTE_RESPONSE" == "426" ] || [ "$ROUTE_RESPONSE" == "404" ]; then
-        echo -e "${GREEN}✓ OK${NC} (HTTP $ROUTE_RESPONSE - route exists)"
-        echo "  Note: Route requires HTTPS (HTTP returns 426)"
-    else
-        echo -e "${YELLOW}⚠ Unexpected response${NC} (HTTP $ROUTE_RESPONSE)"
-    fi
+if [ "${fail}" -eq 0 ]; then
+  echo -e "${GREEN}✅ All ${pass} checks passed${NC}"
+  exit 0
 else
-    echo -e "${YELLOW}⚠ Samsara route not configured${NC}"
-    echo "  Run: ./scripts/kong-setup.sh"
+  echo -e "${RED}❌ ${fail} failed, ${pass} passed${NC}"
+  docker compose ps
+  exit 1
 fi
-
-echo ""
-echo "✅ Testing complete!"

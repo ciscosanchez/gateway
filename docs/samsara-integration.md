@@ -37,7 +37,9 @@ In Samsara dashboard:
 
 1. Go to Settings → Developers → Webhooks
 2. Create new webhook
-3. URL: `http://your-public-ip:8000/samsara`
+3. URL: `https://your-public-host/samsara`  (HTTPS only — Kong rejects HTTP with a 301/426)
+4. Configure the **Custom header** `X-API-Key` with the consumer key from `kong/kong.yml` (`samsara-client`).
+5. Configure the **Signing secret** to match `SAMSARA_WEBHOOK_SECRET` in `.env`. Samsara will send `X-Samsara-Signature` which Kong's `pre-function` plugin verifies before the request reaches n8n.
 4. Select events you want:
    - Vehicle locations
    - Geofence events
@@ -96,7 +98,7 @@ curl -X GET https://api.samsara.com/fleet/vehicles/locations \
 
 3. **HTTP Request: Send to Kafka**
    - Method: POST
-   - URL: `http://redpanda:28082/topics/samsara-events`
+   - URL: `http://redpanda-0:28082/topics/samsara-events`
    - Body:
      ```json
      {
@@ -150,7 +152,7 @@ For data Samsara doesn't push via webhooks:
 
 1. **Kafka Trigger**
    - Topic: `samsara-events`
-   - Bootstrap Servers: `redpanda:29092`
+   - Bootstrap Servers: `redpanda-0:29092,redpanda-1:29092,redpanda-2:29092`
    - Consumer Group: `netsuite-delivery-updates`
 
 2. **Function: Map to NetSuite Format**

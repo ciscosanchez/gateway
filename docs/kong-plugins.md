@@ -1,5 +1,17 @@
 # Kong Plugin Examples
 
+> **Note:** Gateway runs Kong in **DB-less / declarative mode**. The canonical,
+> applied configuration lives in [`kong/kong.yml`](../kong/kong.yml). Every
+> route already has `key-auth`, `rate-limiting` (Redis-backed), `cors`,
+> `request-size-limiting`, `correlation-id`, a security-headers response
+> transformer, `ip-restriction`, and `prometheus` attached globally, plus an
+> HMAC pre-function on `/samsara`.
+>
+> The `curl`-against-the-admin-API examples below are kept as **reference
+> only** — useful when you need to debug in a dev environment. Do not use them
+> against production Kong; edit `kong/kong.yml` and run
+> `./scripts/kong-setup.sh` to hot-reload instead.
+
 This document provides production-ready examples of Kong plugins for securing and managing your API gateway.
 
 ## Authentication Plugins

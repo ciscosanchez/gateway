@@ -1,0 +1,14 @@
+title = "gitleaks gateway config"
+
+[allowlist]
+description = "Allow template/placeholder values"
+regexes = [
+  '''CHANGE_ME''',
+  '''REPLACE_ME''',
+  '''your_[a-z_]+_here''',
+]
+paths = [
+  '''\.env\.example$''',
+  '''docs/.+\.md$''',
+  '''README\.md$''',
+]

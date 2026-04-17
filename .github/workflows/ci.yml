@@ -2,119 +2,167 @@ name: Gateway CI
 
 on:
   push:
-    branches: [ main, develop ]
+    branches: [main, develop]
   pull_request:
-    branches: [ main ]
+    branches: [main]
+
+permissions:
+  contents: read
+  security-events: write
 
 jobs:
+  # ---------------------------------------------------------------------------
+  # Static validation
+  # ---------------------------------------------------------------------------
   validate:
-    name: Validate Configuration
+    name: Validate configs
     runs-on: ubuntu-latest
-    
     steps:
-    - name: Checkout code
-      uses: actions/checkout@v3
-    
-    - name: Validate docker-compose.yml
-      run: docker compose config
-    
-    - name: Check for secrets in code
-      run: |
-        if grep -r "samsara_api_" . --exclude-dir=.git --exclude="*.md" --exclude=".env.example"; then
-          echo "ERROR: Found potential secrets in code"
-          exit 1
-        fi
-    
-    - name: Validate scripts
-      run: |
-        chmod +x scripts/*.sh
-        bash -n scripts/*.sh
-    
-    - name: Run config validation
-      run: |
-        chmod +x scripts/validate-config.sh
-        # Skip .env checks in CI
-        sed -i 's/if \[ ! -f "\.env" \]/if false/' scripts/validate-config.sh
-        ./scripts/validate-config.sh || true
+      - uses: actions/checkout@v4
 
-  test:
-    name: Integration Tests
+      - name: Render .env.example into .env (placeholders only)
+        run: cp .env.example .env
+
+      - name: Validate docker-compose
+        run: docker compose config -q
+
+      - name: Validate Kong declarative config
+        run: |
+          docker run --rm -v "$PWD/kong:/kong:ro" \
+            kong/kong-gateway:3.6 \
+            kong config parse /kong/kong.yml
+
+      - name: Validate workflow JSON
+        run: |
+          for f in workflows/*.json; do
+            echo "Parsing $f"
+            python3 -c "import json,sys; json.load(open('$f'))"
+          done
+
+      - name: Lint YAML
+        uses: ibiqlik/action-yamllint@v3
+        with:
+          config_data: |
+            extends: default
+            rules:
+              line-length: disable
+              document-start: disable
+              comments: { min-spaces-from-content: 1 }
+              truthy: { check-keys: false }
+
+      - name: Shellcheck
+        uses: ludeeus/action-shellcheck@master
+        with:
+          severity: warning
+
+  # ---------------------------------------------------------------------------
+  # Secret scanning - BLOCKING
+  # ---------------------------------------------------------------------------
+  secrets:
+    name: Secret scanning
     runs-on: ubuntu-latest
-    needs: validate
-    
     steps:
-    - name: Checkout code
-      uses: actions/checkout@v3
-    
-    - name: Create .env file
-      run: cp .env.example .env
-    
-    - name: Start services
-      run: |
-        docker compose up -d
-        sleep 60
-    
-    - name: Check service health
-      run: |
-        docker compose ps
-        docker compose logs
-    
-    - name: Run smoke tests
-      run: |
-        chmod +x scripts/test.sh
-        ./scripts/test.sh || true
-    
-    - name: Check for errors in logs
-      run: |
-        if docker compose logs 2>&1 | grep -i "error" | grep -v "level=error.*health.*healthy"; then
-          echo "Errors found in service logs"
-          docker compose logs
-          exit 1
-        fi
-    
-    - name: Cleanup
-      if: always()
-      run: docker compose down -v
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
 
+      - name: gitleaks
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_ENABLE_COMMENTS: "false"
+          GITLEAKS_CONFIG: .gitleaks.toml
+
+      - name: Grep sanity check for known token patterns
+        run: |
+          set -e
+          if grep -REn "samsara_api_[A-Za-z0-9]{20,}" \
+               --exclude-dir=.git --exclude='*.md' --exclude='.env.example' .; then
+            echo "::error::Samsara API token pattern found in source tree"
+            exit 1
+          fi
+
+  # ---------------------------------------------------------------------------
+  # Image + config vulnerability scanning - BLOCKING
+  # ---------------------------------------------------------------------------
   security:
-    name: Security Scan
+    name: Trivy scans
     runs-on: ubuntu-latest
-    
     steps:
-    - name: Checkout code
-      uses: actions/checkout@v3
-    
-    - name: Run Trivy security scan
-      uses: aquasecurity/trivy-action@master
-      with:
-        scan-type: 'config'
-        scan-ref: '.'
-    
-    - name: Check for hardcoded secrets
-      run: |
-        # Check for common secret patterns
-        if grep -r "password.*=.*['\"]" . --exclude-dir=.git --exclude="*.md" --exclude=".env.example" --exclude-dir=docs; then
-          echo "WARNING: Potential hardcoded passwords found"
-        fi
+      - uses: actions/checkout@v4
 
-  lint:
-    name: Lint Configuration Files
+      - name: Trivy config scan
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: config
+          scan-ref: .
+          severity: CRITICAL,HIGH
+          exit-code: "1"
+          ignore-unfixed: true
+
+      - name: Trivy filesystem (secrets + vuln)
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: fs
+          scan-ref: .
+          severity: CRITICAL,HIGH
+          exit-code: "1"
+          ignore-unfixed: true
+
+      - name: Trivy image scans
+        run: |
+          set -e
+          for image in \
+            kong/kong-gateway:3.6 \
+            redpandadata/redpanda:v24.1.7 \
+            n8nio/n8n:1.28.0 \
+            postgres:15-alpine \
+            redis:7-alpine \
+            prom/prometheus:v2.51.0 \
+            prom/alertmanager:v0.27.0 \
+            grafana/grafana:10.4.1 \
+            grafana/loki:2.9.6 \
+            grafana/promtail:2.9.6
+          do
+            echo "=== $image ==="
+            docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
+              aquasec/trivy:latest image --quiet --no-progress \
+              --severity CRITICAL --exit-code 1 --ignore-unfixed "$image"
+          done
+
+  # ---------------------------------------------------------------------------
+  # Smoke test - bring up stack and hit Kong
+  # ---------------------------------------------------------------------------
+  smoke:
+    name: Smoke test
     runs-on: ubuntu-latest
-    
+    needs: [validate, secrets]
     steps:
-    - name: Checkout code
-      uses: actions/checkout@v3
-    
-    - name: Lint YAML files
-      run: |
-        find . -name "*.yml" -o -name "*.yaml" | while read file; do
-          echo "Checking $file"
-          docker run --rm -v $(pwd):/data cytopia/yamllint "$file" || true
-        done
-    
-    - name: Check shell scripts
-      run: |
-        find scripts -name "*.sh" | while read script; do
-          echo "Linting $script"
-          docker run --rm -v $(pwd):/mnt koalaman/shellcheck:stable "$script" || true
-        done
+      - uses: actions/checkout@v4
+      - name: Render env
+        run: cp .env.example .env
+      - name: Generate self-signed TLS
+        run: |
+          mkdir -p config/kong/certs
+          openssl req -x509 -newkey rsa:2048 -sha256 -days 1 -nodes \
+            -keyout config/kong/certs/server.key \
+            -out    config/kong/certs/server.crt \
+            -subj "/CN=localhost"
+      - name: docker compose up
+        run: docker compose up -d --wait --wait-timeout 180
+      - name: Services status
+        run: docker compose ps
+      - name: Kong admin health
+        run: curl -fsS http://127.0.0.1:8001/status
+      - name: Prometheus health
+        run: curl -fsS http://127.0.0.1:9090/-/ready
+      - name: Fail on service errors
+        run: |
+          if docker compose logs 2>&1 | grep -Ei "panic|fatal|level=error" \
+             | grep -vE "healthz|health check"; then
+            echo "::error::Errors found in service logs"
+            docker compose logs
+            exit 1
+          fi
+      - name: Tear down
+        if: always()
+        run: docker compose down -v

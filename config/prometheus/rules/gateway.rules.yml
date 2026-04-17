@@ -1,0 +1,101 @@
+groups:
+  - name: gateway-sla
+    interval: 30s
+    rules:
+      - alert: KongHighErrorRate
+        expr: |
+          sum(rate(kong_http_requests_total{code=~"5.."}[5m]))
+            / sum(rate(kong_http_requests_total[5m])) > 0.05
+        for: 5m
+        labels: { severity: critical }
+        annotations:
+          summary: "Kong 5xx rate > 5% for 5m"
+          description: "Upstream or gateway failure. Check n8n workers and upstream services."
+
+      - alert: KongHighLatencyP95
+        expr: |
+          histogram_quantile(0.95,
+            sum by (le, route)(rate(kong_request_latency_ms_bucket[5m]))
+          ) > 2000
+        for: 10m
+        labels: { severity: warning }
+        annotations:
+          summary: "Kong p95 latency > 2s on {{ $labels.route }}"
+
+      - alert: KongDown
+        expr: up{job="kong"} == 0
+        for: 2m
+        labels: { severity: critical }
+        annotations: { summary: "Kong is not scrapeable" }
+
+  - name: redpanda
+    rules:
+      - alert: RedpandaUnderReplicated
+        expr: vectorized_cluster_partition_under_replicated_replicas > 0
+        for: 5m
+        labels: { severity: critical }
+        annotations:
+          summary: "Redpanda has under-replicated partitions"
+
+      - alert: KafkaConsumerLagHigh
+        expr: kafka_consumergroup_lag > 10000
+        for: 10m
+        labels: { severity: warning }
+        annotations:
+          summary: "Consumer group {{ $labels.consumergroup }} lag > 10k on {{ $labels.topic }}"
+
+  - name: n8n
+    rules:
+      - alert: N8NQueueBacklog
+        expr: n8n_queue_waiting_jobs_total > 1000
+        for: 10m
+        labels: { severity: warning }
+        annotations:
+          summary: "n8n queue backlog > 1000 waiting jobs"
+
+      - alert: N8NWorkflowErrorRate
+        expr: |
+          sum(rate(n8n_workflow_executions_failed_total[5m]))
+            / sum(rate(n8n_workflow_executions_total[5m])) > 0.10
+        for: 10m
+        labels: { severity: warning }
+        annotations:
+          summary: "n8n workflow failure rate > 10%"
+
+  - name: infra
+    rules:
+      - alert: HostOutOfDisk
+        expr: |
+          (1 - node_filesystem_avail_bytes{fstype!~"tmpfs|overlay"}
+              / node_filesystem_size_bytes{fstype!~"tmpfs|overlay"}) > 0.85
+        for: 10m
+        labels: { severity: warning }
+        annotations:
+          summary: "Disk {{ $labels.mountpoint }} > 85% full"
+
+      - alert: HostHighMemory
+        expr: |
+          (1 - node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes) > 0.90
+        for: 10m
+        labels: { severity: warning }
+        annotations: { summary: "Host memory > 90% used" }
+
+      - alert: ContainerRestartingRepeatedly
+        expr: rate(container_last_seen{name=~"gateway-.+"}[15m]) == 0
+             and increase(container_start_time_seconds{name=~"gateway-.+"}[15m]) > 2
+        for: 5m
+        labels: { severity: critical }
+        annotations:
+          summary: "Container {{ $labels.name }} restarting repeatedly"
+
+      - alert: PostgresDown
+        expr: pg_up == 0
+        for: 2m
+        labels: { severity: critical }
+        annotations: { summary: "Postgres is down" }
+
+      - alert: RedisDown
+        expr: redis_up == 0
+        for: 2m
+        labels: { severity: critical }
+        annotations: { summary: "Redis is down" }

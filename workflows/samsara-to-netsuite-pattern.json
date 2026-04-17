@@ -26,7 +26,7 @@
     {
       "parameters": {
         "method": "POST",
-        "url": "http://redpanda:28082/topics/samsara-events",
+        "url": "http://redpanda-0:28082/topics/samsara-events",
         "authentication": "none",
         "sendBody": true,
         "bodyParameters": {
@@ -90,7 +90,7 @@
     {
       "parameters": {
         "method": "POST",
-        "url": "http://redpanda:28082/topics/errors-dlq",
+        "url": "http://redpanda-0:28082/topics/errors-dlq",
         "authentication": "none",
         "sendBody": true,
         "bodyParameters": {

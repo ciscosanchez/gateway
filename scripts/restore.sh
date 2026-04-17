@@ -1,115 +1,78 @@
-#!/bin/bash
+#!/usr/bin/env bash
+# Restore encrypted/plaintext Gateway backups.
+# Works with both .sql.gz and .sql.gz.age variants produced by backup.sh.
+set -euo pipefail
 
-# Restore Script for Gateway Services
-# Restores PostgreSQL databases from backup
+# shellcheck disable=SC1091
+[ -f .env ] && source .env
 
-set -e
-
-if [ -z "$1" ]; then
-  echo "Usage: ./scripts/restore.sh <backup_directory>"
-  echo ""
-  echo "Example:"
-  echo "  ./scripts/restore.sh ./backups/20260417_120000"
+if [ $# -lt 1 ]; then
+  echo "Usage: $0 <backup_directory>"
+  echo "Example: $0 ./backups/20260417_120000"
   exit 1
 fi
 
 BACKUP_DIR="$1"
+[ -d "${BACKUP_DIR}" ] || { echo "❌ ${BACKUP_DIR} not found"; exit 1; }
 
-if [ ! -d "$BACKUP_DIR" ]; then
-  echo "❌ Error: Backup directory not found: $BACKUP_DIR"
-  exit 1
-fi
-
-echo "🔄 Gateway Restore Started"
-echo "Restoring from: $BACKUP_DIR"
+echo "🔄 Gateway Restore from: ${BACKUP_DIR}"
 echo ""
+read -r -p "⚠️  This OVERWRITES current data. Type 'yes' to continue: " confirm
+[ "${confirm}" = "yes" ] || { echo "cancelled"; exit 0; }
 
-# Confirmation
-read -p "⚠️  This will OVERWRITE current data. Are you sure? (yes/no): " confirm
-if [ "$confirm" != "yes" ]; then
-  echo "Restore cancelled."
-  exit 0
-fi
+decrypt_if_needed() {
+  local path="$1"
+  if [ -f "${path}.age" ]; then
+    [ -n "${BACKUP_AGE_IDENTITY_FILE:-}" ] || {
+      echo "❌ Encrypted backup found but BACKUP_AGE_IDENTITY_FILE not set"; exit 1; }
+    age -d -i "${BACKUP_AGE_IDENTITY_FILE}" -o "${path}" "${path}.age"
+  fi
+}
 
-echo ""
+echo "🛑 Stopping workers that write state..."
+docker compose stop n8n n8n-worker kong || true
 
-# Stop services that write to databases
-echo "🛑 Stopping services..."
-docker compose stop n8n kong
-echo "✅ Services stopped"
-echo ""
-
-# Restore PostgreSQL (n8n database)
-if [ -f "$BACKUP_DIR/postgres-gateway.sql" ]; then
-  echo "📦 Restoring PostgreSQL (n8n)..."
-  
-  # Drop and recreate database
-  docker exec gateway-postgres psql -U gateway -c "DROP DATABASE IF EXISTS gateway;"
-  docker exec gateway-postgres psql -U gateway -c "CREATE DATABASE gateway;"
-  
-  # Restore from backup
-  docker exec -i gateway-postgres psql -U gateway gateway < "$BACKUP_DIR/postgres-gateway.sql"
-  echo "✅ PostgreSQL (n8n) restored"
+# --- Postgres (gateway / n8n) ---
+sql="${BACKUP_DIR}/postgres-gateway.sql.gz"
+decrypt_if_needed "${sql}"
+if [ -f "${sql}" ]; then
+  echo "📦 Restoring Postgres (${POSTGRES_DB})..."
+  docker exec -i gateway-postgres psql -U "${POSTGRES_USER}" -c \
+    "DROP DATABASE IF EXISTS ${POSTGRES_DB};"
+  docker exec -i gateway-postgres psql -U "${POSTGRES_USER}" -c \
+    "CREATE DATABASE ${POSTGRES_DB};"
+  gunzip -c "${sql}" | docker exec -i gateway-postgres \
+    psql -U "${POSTGRES_USER}" "${POSTGRES_DB}"
+  echo "✅ Postgres restored"
 else
-  echo "⚠️  Skipping PostgreSQL (n8n): backup file not found"
+  echo "⚠️  postgres-gateway.sql.gz not present; skipping"
+fi
+
+# --- Kong (declarative) ---
+if [ -f "${BACKUP_DIR}/kong.yml" ]; then
+  echo "📦 Restoring Kong declarative config..."
+  cp "${BACKUP_DIR}/kong.yml" kong/kong.yml
+  echo "✅ kong/kong.yml restored (Kong will reload on restart)"
+fi
+
+# --- Redpanda topic list - recreate structure only ---
+topics="${BACKUP_DIR}/redpanda-topics.txt"
+decrypt_if_needed "${topics}"
+if [ -f "${topics}" ]; then
+  echo "📦 Redpanda topics present in snapshot (data NOT restored):"
+  cat "${topics}" | sed 's/^/  /'
+  echo "   -> run ./scripts/create-topics.sh to re-create if needed"
 fi
 
 echo ""
-
-# Restore Kong database
-if [ -f "$BACKUP_DIR/postgres-kong.sql" ]; then
-  echo "📦 Restoring PostgreSQL (Kong)..."
-  
-  # Drop and recreate database
-  docker exec gateway-kong-db psql -U kong -c "DROP DATABASE IF EXISTS kong;"
-  docker exec gateway-kong-db psql -U kong -c "CREATE DATABASE kong;"
-  
-  # Restore from backup
-  docker exec -i gateway-kong-db psql -U kong kong < "$BACKUP_DIR/postgres-kong.sql"
-  echo "✅ PostgreSQL (Kong) restored"
-else
-  echo "⚠️  Skipping PostgreSQL (Kong): backup file not found"
-fi
-
-echo ""
-
-# Restore Redpanda topics (metadata only)
-if [ -f "$BACKUP_DIR/redpanda-topics.txt" ]; then
-  echo "📦 Recreating Redpanda topics..."
-  while read -r line; do
-    # Skip header lines
-    if [[ $line == NAME* ]] || [[ $line == ----* ]]; then
-      continue
-    fi
-    
-    TOPIC=$(echo $line | awk '{print $1}')
-    if [ -n "$TOPIC" ]; then
-      echo "  Creating topic: $TOPIC"
-      docker exec gateway-redpanda rpk topic create "$TOPIC" --partitions 3 --replicas 1 || true
-    fi
-  done < "$BACKUP_DIR/redpanda-topics.txt"
-  echo "✅ Redpanda topics recreated"
-else
-  echo "⚠️  Skipping Redpanda topics: backup file not found"
-fi
-
-echo ""
-
-# Restart services
 echo "🚀 Restarting services..."
 docker compose up -d
-echo "✅ Services restarted"
-
-echo ""
-echo "⏳ Waiting for services to be healthy..."
-sleep 10
+sleep 15
 docker compose ps
 
 echo ""
-echo "✅ Restore complete!"
-echo ""
-echo "Next steps:"
-echo "  1. Verify n8n workflows: http://localhost:5678"
-echo "  2. Verify Kong routes: curl http://localhost:8001/routes"
-echo "  3. Check Redpanda topics: docker exec -it gateway-redpanda rpk topic list"
-echo "  4. Run smoke tests: ./scripts/test.sh"
+echo "✅ Restore complete."
+echo "Next:"
+echo "  1. ./scripts/test.sh"
+echo "  2. Verify n8n workflows at http://127.0.0.1:5678"
+echo "  3. Verify Kong at curl -sk https://localhost:8443/"

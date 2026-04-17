@@ -1,230 +1,112 @@
 # Deployment Checklist
 
-Use this checklist before deploying to staging or production.
-
-## Pre-Deployment Validation
+## Pre-deploy
 
 ### Configuration
-- [ ] Run `./scripts/validate-config.sh` - all checks pass
-- [ ] `.env` file configured with real values (not placeholders)
-- [ ] All secrets rotated from development values
-- [ ] Secrets stored in secret manager (not in `.env` file)
-- [ ] Docker image versions pinned (no `:latest` tags)
-- [ ] Resource limits configured for all services
+- [ ] `.env` populated with real secrets pulled from the secret manager (no `CHANGE_ME`/`REPLACE_ME`).
+- [ ] `config/kong/certs/server.{crt,key}` are production certs (not self-signed).
+- [ ] `kong/kong.yml`:
+  - [ ] Every `REPLACE_ME_*_api_key` replaced with a rotated key.
+  - [ ] `ip-restriction.allow` pinned to real caller CIDRs.
+  - [ ] `cors.origins` pinned to real origins.
+- [ ] `ALERTMANAGER_SLACK_WEBHOOK` and `ALERTMANAGER_PAGERDUTY_KEY` set.
+- [ ] `BACKUP_AGE_RECIPIENT` set so backups are encrypted.
+
+### Infrastructure
+- [ ] Kong running behind an LB on 443 only (no direct host binding in prod).
+- [ ] ≥ 2 Kong replicas (DB-less, stateless).
+- [ ] Postgres on managed service with TLS, daily backups, PITR.
+- [ ] Redpanda 3-node cluster on 3 separate hosts (or Redpanda Cloud / MSK).
+- [ ] Redis reachable only on internal network.
+- [ ] n8n main + ≥ 2 workers (`docker compose up -d --scale n8n-worker=2+`).
 
 ### Security
-- [ ] Kong Admin API (8001, 8002) not publicly exposed
-- [ ] TLS/HTTPS certificates installed
-- [ ] API authentication enabled on all routes
-- [ ] Rate limiting configured per route
-- [ ] Strong passwords (64+ characters) on all services
-- [ ] IP whitelisting configured where needed
-- [ ] CORS policies configured correctly
-- [ ] Security headers added (X-Frame-Options, CSP, etc.)
+- [ ] Admin UIs (8001/8002/5678/8080/9090/9093/3002/3100) are not reachable from the public internet.
+- [ ] TLS certs valid (`openssl x509 -in server.crt -noout -dates`).
+- [ ] `./scripts/validate-config.sh` passes with 0 errors.
+- [ ] CI pipeline is green (gitleaks + Trivy gates passing).
 
-### High Availability
-- [ ] Redpanda running in cluster mode (3+ nodes)
-- [ ] PostgreSQL using managed service or replication
-- [ ] Kong running with 2+ instances
-- [ ] Load balancer configured in front of Kong
-- [ ] Health checks configured for all services
-- [ ] Restart policies set to `unless-stopped`
+### Observability
+- [ ] Prometheus scraping all 9 targets (`/targets` page - all `up=1`).
+- [ ] Alertmanager receiver test fires in Slack / PagerDuty.
+- [ ] Grafana dashboards loaded (provisioned from `config/grafana/dashboards`).
+- [ ] Loki receiving logs (`{container="gateway-kong"}` query returns lines).
 
-### Backup & Recovery
-- [ ] Backup script tested: `./scripts/backup.sh`
-- [ ] Restore script tested: `./scripts/restore.sh`
-- [ ] Backups scheduled (daily recommended)
-- [ ] Backup retention policy defined
-- [ ] Recovery time objective (RTO) documented
-- [ ] Recovery point objective (RPO) documented
-- [ ] Disaster recovery plan documented
-
-### Monitoring & Alerting
-- [ ] Grafana dashboards created and working
-- [ ] Prometheus scraping all services
-- [ ] Loki receiving logs from all services
-- [ ] Alerts configured for:
-  - [ ] API error rate > 5%
-  - [ ] Response time p95 > 2s
-  - [ ] Redpanda consumer lag > 10k
-  - [ ] Disk usage > 80%
-  - [ ] Memory usage > 90%
-  - [ ] Service health check failures
-- [ ] Alert notification channels configured (Slack/PagerDuty/email)
-- [ ] On-call rotation defined
-
-### Testing
-- [ ] Smoke tests pass: `./scripts/test.sh`
-- [ ] Integration tests completed
-- [ ] Load testing completed (target: 5k req/sec)
-- [ ] Failover testing completed
-- [ ] Workflow executions tested end-to-end
-- [ ] Dead letter queue processing tested
-
-### Documentation
-- [ ] Architecture diagram up to date
-- [ ] All integrations documented
-- [ ] Runbook created for common issues
-- [ ] Escalation procedures documented
-- [ ] Contact information current
-
-### Network & Infrastructure
-- [ ] DNS configured correctly
-- [ ] Firewall rules applied
-- [ ] VPN access configured for admin access
-- [ ] SSL/TLS certificates valid (not expired)
-- [ ] CDN configured (if applicable)
-
-### Compliance
-- [ ] Security review completed
-- [ ] Penetration testing completed (if required)
-- [ ] Compliance requirements met (SOC 2, HIPAA, etc.)
-- [ ] Data retention policies configured
-- [ ] Audit logging enabled
-
-## Deployment Steps
-
-### 1. Pre-Deployment
-```bash
-# Validate configuration
-./scripts/validate-config.sh
-
-# Create backup of current state
-./scripts/backup.sh
-
-# Tag the release
-git tag -a v1.0.0 -m "Production release v1.0.0"
-git push origin v1.0.0
-```
-
-### 2. Deploy
-```bash
-# Pull latest code
-git pull origin main
-
-# Start services
-docker compose up -d
-
-# Wait for health checks
-sleep 60
-docker compose ps
-
-# Verify all services are healthy
-./scripts/test.sh
-```
-
-### 3. Post-Deployment
-```bash
-# Set up Kong routes and security
-./scripts/kong-setup.sh
-./scripts/secure-kong-routes.sh
-
-# Verify workflows
-# Open http://localhost:5678 and test each workflow
-
-# Monitor for 15 minutes
-# Watch Grafana dashboards, check for errors
-```
-
-### 4. Rollback (if needed)
-```bash
-# Stop new version
-docker compose down
-
-# Restore from backup
-./scripts/restore.sh ./backups/<timestamp>
-
-# Restart previous version
-git checkout <previous-tag>
-docker compose up -d
-```
-
-## Post-Deployment Monitoring
-
-### First Hour
-- [ ] Monitor error rates (should be < 0.1%)
-- [ ] Monitor response times (p95 < 500ms)
-- [ ] Check Redpanda consumer lag (should be near 0)
-- [ ] Verify workflows executing successfully
-- [ ] Check disk/memory/CPU usage
-
-### First Day
-- [ ] Review all error logs
-- [ ] Verify all scheduled workflows ran
-- [ ] Check backup completed successfully
-- [ ] Review security alerts
-- [ ] Verify integrations working end-to-end
-
-### First Week
-- [ ] Review weekly metrics
-- [ ] Optimize based on traffic patterns
-- [ ] Update documentation with learnings
-- [ ] Schedule retrospective meeting
-
-## Rollback Criteria
-
-Immediately rollback if:
-- Error rate > 5% for 5+ minutes
-- Critical workflow failure rate > 10%
-- Response time p95 > 5 seconds for 10+ minutes
-- Database connection failures
-- Redpanda cluster unhealthy
-- Security incident detected
-
-## Emergency Contacts
-
-| Role | Name | Phone | Email |
-|------|------|-------|-------|
-| On-Call Engineer | | | |
-| DevOps Lead | | | |
-| Security Team | | | |
-| Manager | | | |
-
-## Useful Commands
-
-```bash
-# Check service status
-docker compose ps
-
-# View logs
-docker compose logs -f kong n8n redpanda
-
-# Restart a service
-docker compose restart <service>
-
-# Check Kong routes
-curl http://localhost:8001/routes
-
-# Check Redpanda topics
-docker exec -it gateway-redpanda rpk topic list
-
-# Force backup
-./scripts/backup.sh
-
-# Access n8n
-open http://localhost:5678
-
-# Access Grafana
-open http://localhost:3002
-```
-
-## Production-Specific Notes
-
-**DO NOT:**
-- Expose Kong Admin API (8001, 8002) to public internet
-- Use default passwords
-- Deploy without testing backups
-- Skip load testing
-- Deploy on Friday afternoon
-
-**DO:**
-- Use managed services where possible (RDS, Cloud SQL, etc.)
-- Set up proper monitoring before launch
-- Have rollback plan ready
-- Test disaster recovery procedures
-- Keep documentation up to date
+### Data
+- [ ] Topics created with replication=3 (`rpk topic describe samsara-events`).
+- [ ] Consumer groups created (`rpk group list`).
+- [ ] Backup + restore drill completed on staging within the last 30 days.
 
 ---
 
-**Last Updated:** April 17, 2026  
-**Next Review:** [Set date for quarterly review]
+## Deploy
+
+```bash
+# Validate
+./scripts/validate-config.sh
+
+# Snapshot current state
+./scripts/backup.sh
+
+# Tag
+git tag -a v1.0.0 -m "Production release v1.0.0"
+git push origin v1.0.0
+
+# Deploy (prefer rolling update via your orchestrator; for single-host:)
+docker compose pull
+docker compose up -d --wait --wait-timeout 300
+
+# Apply Kong config (if changed)
+./scripts/kong-setup.sh
+
+# Verify
+./scripts/test.sh
+```
+
+## Post-deploy (first 60 min)
+- [ ] Kong 5xx rate < 0.5%.
+- [ ] p95 latency < 500 ms.
+- [ ] Consumer lag per topic near 0.
+- [ ] No repeated container restarts (`docker compose ps`).
+- [ ] No firing critical alerts.
+
+## Rollback
+
+```bash
+git checkout <previous-tag>
+docker compose up -d --wait
+./scripts/restore.sh ./backups/<pre-deploy-ts>   # only if data corruption
+```
+
+Rollback criteria (immediate):
+- 5xx rate > 5% for 5 min
+- Workflow failure rate > 10% for 10 min
+- p95 latency > 5 s for 10 min
+- Any `PostgresDown` / `RedisDown` / `RedpandaUnderReplicated` firing
+- Security incident
+
+## Scale up
+
+- More Kong: `docker compose up -d --scale kong=3` (behind the LB).
+- More n8n workers: `docker compose up -d --scale n8n-worker=N`.
+- More Kafka throughput: add a 4th/5th broker, then `rpk cluster reassign`.
+- Raise Redpanda memory: edit each `redpanda-N` service's `--memory` flag.
+
+## Useful
+
+```bash
+# Kong
+curl -s http://127.0.0.1:8001/status | jq .
+curl -s http://127.0.0.1:8001/routes | jq '.data[].paths'
+
+# Redpanda
+docker exec gateway-redpanda-0 rpk cluster health --brokers redpanda-0:29092
+docker exec gateway-redpanda-0 rpk topic describe samsara-events --brokers redpanda-0:29092
+docker exec gateway-redpanda-0 rpk group list --brokers redpanda-0:29092
+
+# n8n
+curl -s -u $N8N_BASIC_AUTH_USER:$N8N_BASIC_AUTH_PASSWORD http://127.0.0.1:5678/healthz
+
+# Prometheus
+curl -s http://127.0.0.1:9090/api/v1/targets | jq '.data.activeTargets[] | {job:.labels.job, up:.health}'
+```

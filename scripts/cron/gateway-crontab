@@ -1,0 +1,4 @@
+# Gateway backup cron - run daily at 02:15 local time.
+# Install with:  crontab scripts/cron/gateway-crontab
+# Or on systemd:  copy this file and set up a systemd timer.
+15 2 * * * cd /opt/gateway && ./scripts/backup.sh >> /var/log/gateway-backup.log 2>&1

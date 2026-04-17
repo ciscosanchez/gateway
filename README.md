@@ -1,777 +1,249 @@
-# Gateway - Integration Platform
+# Gateway — Integration Platform
 
-> **⚠️ Current Status:** Development/Staging Only - See [Security Guide](docs/SECURITY.md) before production use
-
-An in-house integration platform replacing Team Central, built with Kong API Gateway, Redpanda (Kafka), and n8n workflow orchestration.
+In-house integration platform: **Kong** (DB-less) → **Redpanda** (3-node Kafka cluster) → **n8n** (queue-mode workflow orchestration), backed by Postgres + Redis and a full Prometheus / Grafana / Loki observability stack.
 
 **Integrations:** Samsara • NetSuite • Unigroup EDI • WMS • Custom APIs
 
+> **Status:** production-capable on a single host via `docker-compose`. Review
+> [`docs/SECURITY.md`](docs/SECURITY.md) and
+> [`docs/DEPLOYMENT-CHECKLIST.md`](docs/DEPLOYMENT-CHECKLIST.md) before
+> pointing real traffic at any instance you don't control end-to-end.
+
 ---
 
-## 📋 Table of Contents
+## Contents
 
 - [Architecture](#architecture)
-- [Quick Start](#quick-start)
-- [Components](#components)
-- [Integration Flows](#integration-flows)
-- [Security](#security)
-- [Monitoring](#monitoring)
-- [Development](#development)
-- [Production Readiness](#production-readiness)
+- [Quick start](#quick-start)
+- [Services](#services)
+- [Configuration](#configuration)
+- [Scaling](#scaling)
+- [Security posture](#security-posture)
+- [Observability](#observability)
+- [Operations](#operations)
+- [Repo layout](#repo-layout)
 
 ---
 
-## 🏗️ Architecture
-
-### System Overview
+## Architecture
 
 ```mermaid
-graph TD
-    A[External Systems] -->|HTTPS| B[Kong API Gateway]
-    B -->|Route & Transform| C[Redpanda Message Bus]
-    C -->|Consume| D[n8n Workflows]
-    D -->|Update| E[Internal Systems]
-    
-    B -->|Metrics| F[Prometheus]
-    D -->|Metrics| F
-    C -->|Metrics| F
-    F --> G[Grafana Dashboards]
-    
-    B -->|Logs| H[Loki]
-    D -->|Logs| H
-    H --> G
-    
-    style B fill:#4CAF50
-    style C fill:#FF9800
-    style D fill:#2196F3
-    style G fill:#9C27B0
+graph LR
+  EXT[External systems] -->|HTTPS 443| KONG[Kong Gateway<br/>DB-less, key-auth + HMAC<br/>rate-limit via Redis]
+  KONG -->|internal| N8N[n8n main<br/>webhooks + API]
+  N8N -->|enqueue| REDIS[(Redis<br/>queue broker)]
+  REDIS --> WORK[n8n-worker × N]
+  WORK --> RP[Redpanda<br/>3-broker cluster<br/>RF=3, min.insync=2]
+  RP --> WORK
+  WORK --> NS[NetSuite]
+  WORK --> WMS[WMS]
+  WORK --> EDI[Unigroup EDI]
+  N8N --> PG[(Postgres)]
+  WORK --> PG
+
+  subgraph Observability
+    PROM[Prometheus] --> AM[Alertmanager]
+    PROM --> GRAF[Grafana]
+    LOKI[Loki] --> GRAF
+    PROMTAIL[Promtail] --> LOKI
+  end
+  KONG --> PROM
+  N8N --> PROM
+  RP --> PROM
+  PG --> PROM
+  REDIS --> PROM
 ```
 
-### Component Architecture
+Key properties:
 
+- **Kong is DB-less.** All routes, plugins, consumers, and API keys live in [`kong/kong.yml`](kong/kong.yml). There is no `kong-database` container.
+- **Redpanda is a 3-broker cluster.** Topics are created with `replication=3, min.insync.replicas=2, compression=zstd`.
+- **n8n runs in queue mode.** The main container handles webhooks/API; execution is dispatched via Redis to N worker containers that you can scale independently.
+- **Admin UIs are loopback-only.** Kong admin (8001/8002), n8n (5678), Redpanda Console (8080), Grafana (3002), Prometheus (9090), Alertmanager (9093), and Loki (3100) bind to `127.0.0.1` on the host. Only the public proxy on 8000/8443 listens on `0.0.0.0`.
+- **Every public route is auth'd and rate-limited.** `key-auth` + redis-backed `rate-limiting` + `request-size-limiting` + `cors` + security headers + `ip-restriction` + `correlation-id` are applied globally; Samsara additionally has an HMAC pre-function plugin.
+
+---
+
+## Quick start
+
+```bash
+cp .env.example .env               # then replace every CHANGE_ME
+./scripts/setup.sh                 # generates dev TLS cert, starts stack, creates topics
+./scripts/test.sh                  # smoke test
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                     External Systems                         │
-│  Samsara • NetSuite • Unigroup • WMS • Custom APIs          │
-└──────────────────┬──────────────────────────────────────────┘
-                   │ HTTPS/Webhooks
-                   ↓
-┌─────────────────────────────────────────────────────────────┐
-│                   Kong API Gateway (Port 8000)               │
-│  • Authentication (API Keys, OAuth, Basic)                   │
-│  • Rate Limiting (per consumer, per route)                   │
-│  • Request Transformation                                    │
-│  • TLS Termination                                          │
-│  • Logging & Metrics                                        │
-└──────────────────┬──────────────────────────────────────────┘
-                   │
-                   ↓
-┌─────────────────────────────────────────────────────────────┐
-│           Redpanda Message Bus (Kafka Compatible)            │
-│  Topics:                                                     │
-│  • samsara-events         (vehicle locations, alerts)        │
-│  • netsuite-orders        (sales orders, invoices)           │
-│  • inventory-updates      (stock changes)                    │
-│  • edi-inbound           (Unigroup EDI 850/856)             │
-│  • dead-letter-queue     (failed messages)                   │
-└──────────────────┬──────────────────────────────────────────┘
-                   │
-                   ↓
-┌─────────────────────────────────────────────────────────────┐
-│                  n8n Workflow Orchestration                  │
-│  • NetSuite Integration (OAuth 1.0)                         │
-│  • Samsara Integration (API Token)                          │
-│  • WMS Integration                                          │
-│  • Data Transformation (JSON ↔ EDI ↔ Custom)               │
-│  • Error Handling & Retry Logic                            │
-│  • Dead Letter Queue Processing                            │
-└──────────────────┬──────────────────────────────────────────┘
-                   │
-                   ↓
-┌─────────────────────────────────────────────────────────────┐
-│                    Internal Systems                          │
-│  • NetSuite ERP                                             │
-│  • Warehouse Management System                              │
-│  • Internal Databases                                       │
-└─────────────────────────────────────────────────────────────┘
 
-┌─────────────────────────────────────────────────────────────┐
-│                      Observability Stack                     │
-│  Prometheus (metrics) → Grafana (dashboards)                │
-│  Loki (logs) → Grafana (log search)                        │
-└─────────────────────────────────────────────────────────────┘
+`setup.sh` will:
+1. Verify Docker.
+2. Generate `config/kong/certs/server.{crt,key}` (self-signed, for dev only).
+3. `docker compose up -d --wait`.
+4. Create Redpanda topics with production settings.
+
+To scale workers: `docker compose up -d --scale n8n-worker=4`.
+
+Edit `kong/kong.yml` → apply with `./scripts/kong-setup.sh` (hot reload via loopback admin API).
+
+---
+
+## Services
+
+| Service           | Port (exposed)      | Role                                   |
+|-------------------|---------------------|----------------------------------------|
+| Kong proxy        | `0.0.0.0:8000/8443` | **Public** - HTTPS API gateway         |
+| Kong admin        | `127.0.0.1:8001`    | Admin API (tunnel to reach)            |
+| Kong manager      | `127.0.0.1:8002`    | Web UI                                 |
+| n8n main          | `127.0.0.1:5678`    | Workflow editor + webhook frontend     |
+| n8n-worker        | –                   | Queue workers (replicas configurable)  |
+| Postgres          | internal            | n8n state                              |
+| Redis             | internal            | Queue broker + Kong rate-limit counters|
+| Redpanda 0/1/2    | internal (`:9092` on node-0 loopback) | Kafka cluster            |
+| Redpanda Console  | `127.0.0.1:8080`    | Topic / message inspector              |
+| Prometheus        | `127.0.0.1:9090`    | Metrics                                |
+| Alertmanager      | `127.0.0.1:9093`    | Alert routing (Slack / PagerDuty)      |
+| Grafana           | `127.0.0.1:3002`    | Dashboards + log explorer              |
+| Loki              | `127.0.0.1:3100`    | Log aggregation                        |
+| Promtail          | internal            | Docker log shipping → Loki             |
+| node-exporter     | internal            | Host metrics                           |
+| cAdvisor          | internal            | Container metrics                      |
+| postgres-exporter | internal            | Postgres metrics                       |
+| redis-exporter    | internal            | Redis metrics                          |
+
+To reach a loopback-bound UI from a workstation:
+```bash
+ssh -L 3002:127.0.0.1:3002 -L 8001:127.0.0.1:8001 -L 5678:127.0.0.1:5678 prod-host
 ```
 
 ---
 
-## 🚀 Quick Start
+## Configuration
 
-### Prerequisites
+All tunables are environment variables consumed by `docker-compose.yml`:
 
-1. **Docker Desktop** installed and running
-   - Mac: [Download Docker Desktop](https://www.docker.com/products/docker-desktop/)
-   - Windows: [Download Docker Desktop](https://www.docker.com/products/docker-desktop/) (WSL2 required)
-   - Linux: `sudo apt install docker.io docker-compose`
+- **Application secrets** → `.env` (gitignored). In production inject via AWS Secrets Manager / Vault / SSM — the compose file already reads `${VAR}` so this is a drop-in.
+- **Kong routes / plugins / consumers** → `kong/kong.yml`.
+- **Prometheus scrape + rules** → `config/prometheus/prometheus.yml`, `config/prometheus/rules/*.yml`.
+- **Alert routing** → `config/alertmanager/alertmanager.yml` (uses `ALERTMANAGER_SLACK_WEBHOOK`, `ALERTMANAGER_PAGERDUTY_KEY`).
+- **Log pipeline** → `config/loki/loki-config.yaml`, `config/promtail/promtail.yml`.
+- **Grafana datasources / dashboards** → `config/grafana/provisioning/`.
+- **Kafka topic layout** → `scripts/create-topics.sh`.
 
-2. **Git** (to clone this repo)
+### Rotating an API key
 
-### Installation
+1. Edit the relevant consumer block in `kong/kong.yml` (replace the `key:` value).
+2. `./scripts/kong-setup.sh` (hot reload).
+3. Distribute the new key to the caller.
+
+### Adding a route
+
+Append a new `services:` entry in `kong/kong.yml` with its own `routes:` — the global plugin block will auto-apply auth + rate-limit + size + cors + headers + ip-restriction. Then `./scripts/kong-setup.sh`.
+
+---
+
+## Scaling
+
+- **Kong**: stateless in DB-less mode. Run ≥ 2 replicas behind an L4/L7 LB. `docker compose up -d --scale kong=N`.
+- **n8n workers**: `docker compose up -d --scale n8n-worker=N`. Each worker processes up to `--concurrency=10` jobs in parallel.
+- **Redpanda**: increase partition counts in `scripts/create-topics.sh` and scale brokers horizontally. `samsara-events` defaults to 24 partitions keyed on `vehicle_id`.
+- **Postgres**: migrate to a managed service (RDS / CloudSQL) before significant write load.
+
+---
+
+## Security posture
+
+Summary (full details in [`docs/SECURITY.md`](docs/SECURITY.md)):
+
+- Admin surfaces bound to loopback only.
+- Kong DB-less + declarative → no runtime admin-API writes in prod.
+- `key-auth` + redis-shared `rate-limiting` + `request-size-limiting` + HSTS/CSP + `ip-restriction` on every route.
+- Samsara HMAC verified in a Kong `pre-function` before n8n ever sees the request.
+- PII (driver names, formatted addresses) redacted before publish to Kafka.
+- `N8N_ENCRYPTION_KEY` set so n8n credentials are encrypted at rest.
+- `scram-sha-256` on Postgres.
+- TLS-only routes; modern cipher suite.
+- gitleaks + Trivy (config/fs/image) in CI as **blocking** gates.
+- Backups encrypted with `age` when `BACKUP_AGE_RECIPIENT` is set.
+
+---
+
+## Observability
+
+- **Metrics**: Prometheus scrapes Kong, n8n, Redpanda (all 3 nodes), Postgres, Redis, node-exporter, cAdvisor, Alertmanager, Loki.
+- **Alerts**: `config/prometheus/rules/gateway.rules.yml` covers 5xx rate, p95 latency, consumer lag, under-replicated partitions, queue backlog, workflow error rate, disk/memory, container restart loops, Postgres/Redis down.
+- **Logs**: Promtail discovers every container via the Docker socket and ships to Loki with `correlation-id` extraction.
+- **Dashboards**: provisioned from `config/grafana/dashboards/`.
+
+Slack + PagerDuty receivers are wired in `config/alertmanager/alertmanager.yml`; populate `ALERTMANAGER_SLACK_WEBHOOK` / `ALERTMANAGER_PAGERDUTY_KEY` in `.env`.
+
+---
+
+## Operations
 
 ```bash
-# 1. Clone the repository
-git clone https://github.com/ciscosanchez/gateway.git
-cd gateway
+# Preflight
+./scripts/validate-config.sh
 
-# 2. Copy environment template
-cp .env.example .env
+# Daily / CI
+./scripts/test.sh
 
-# 3. Edit .env with your API keys (see .env.example for details)
-nano .env  # or use your preferred editor
+# Backups (encrypted if BACKUP_AGE_RECIPIENT set; prunes > BACKUP_RETENTION_DAYS)
+./scripts/backup.sh
+./scripts/restore.sh ./backups/<ts>
 
-# 4. Start all services
-docker compose up -d
+# Redpanda
+docker exec gateway-redpanda-0 rpk cluster health --brokers redpanda-0:29092
+docker exec gateway-redpanda-0 rpk topic describe samsara-events --brokers redpanda-0:29092
+docker exec gateway-redpanda-0 rpk group list --brokers redpanda-0:29092
 
-# 5. Wait for services to be healthy (~2 minutes)
-docker compose ps
-
-# 6. Set up Kong routes
+# Kong hot reload
 ./scripts/kong-setup.sh
 
-# 7. Run tests
-./scripts/test.sh
+# Scale
+docker compose up -d --scale n8n-worker=4 --scale kong=2
 ```
 
-### Access the Services
-
-| Service | URL | Default Credentials | Purpose |
-|---------|-----|-------------------|---------|
-| **Kong Proxy** | http://localhost:8000 | Route-specific | API Gateway (public traffic) |
-| **Kong Admin API** | http://localhost:8001 | None (⚠️ dev only) | Configuration API |
-| **Kong Manager** | http://localhost:8002 | None (⚠️ dev only) | Web UI for Kong |
-| **n8n Workflows** | http://localhost:5678 | admin / admin | Visual workflow builder |
-| **Redpanda Console** | http://localhost:8080 | None | Kafka message viewer |
-| **Grafana** | http://localhost:3002 | admin / admin | Monitoring dashboards |
-| **Prometheus** | http://localhost:9090 | None | Metrics database |
+A cron template for daily backups is provided at `scripts/cron/gateway-crontab`.
 
 ---
 
-## 🧩 Components
-
-### Kong API Gateway
-
-**Purpose:** Secure API ingress point with auth, rate limiting, and routing
-
-**Key Features:**
-- API key / OAuth / Basic authentication
-- Rate limiting (per consumer, per IP, global)
-- Request/response transformation
-- Plugin ecosystem (50+ plugins)
-- High performance (10k+ req/sec)
-
-**Configuration:**
-- Services: Define upstream APIs
-- Routes: URL paths and matching rules
-- Plugins: Auth, rate limiting, logging, etc.
-
-**Example:**
-```bash
-# Create service
-curl -X POST http://localhost:8001/services \
-  --data name=samsara-api \
-  --data url=http://n8n:5678/webhook/samsara
-
-# Create route
-curl -X POST http://localhost:8001/services/samsara-api/routes \
-  --data paths[]=/samsara
-
-# Add API key auth
-curl -X POST http://localhost:8001/routes/{route-id}/plugins \
-  --data name=key-auth
-```
-
-See [Kong Plugin Examples](docs/kong-plugins.md) for more.
-
----
-
-### Redpanda (Kafka)
-
-**Purpose:** Message bus for async communication and event buffering
-
-**Key Features:**
-- Kafka API compatible
-- Built-in HTTP Proxy for REST access
-- Schema Registry support
-- Lower resource usage than Apache Kafka
-- Single-binary deployment
-
-**Topics:**
-- `samsara-events`: Vehicle locations, alerts, driver assignments
-- `netsuite-orders`: Sales orders, invoices, fulfillments
-- `inventory-updates`: Stock level changes
-- `edi-inbound`: Unigroup EDI documents (850, 856, etc.)
-- `dead-letter-queue`: Failed messages for manual review
-
-**Example:**
-```bash
-# List topics
-docker exec -it gateway-redpanda rpk topic list
-
-# Create topic
-docker exec -it gateway-redpanda rpk topic create my-topic \
-  --partitions 3 \
-  --replicas 1
-
-# Publish message
-echo '{"event": "test"}' | docker exec -i gateway-redpanda \
-  rpk topic produce my-topic
-```
-
-View messages in real-time: http://localhost:8080
-
----
-
-### n8n Workflow Orchestration
-
-**Purpose:** Visual workflow builder for integration logic
-
-**Key Features:**
-- 500+ pre-built integrations
-- Visual drag-and-drop editor
-- JavaScript for custom logic
-- Error handling and retry logic
-- Scheduled triggers (cron)
-- Webhook triggers
-
-**Example Workflows:**
-- `workflows/samsara-fleet-dashboard.json`: Pull vehicle data every 5 min
-- `workflows/netsuite-create-sales-order.json`: Process orders from Kafka → NetSuite
-- `workflows/samsara-to-netsuite.json`: Sync Samsara events to NetSuite
-
-**Import a workflow:**
-1. Open http://localhost:5678
-2. Click "Add Workflow" → "Import from File"
-3. Select a JSON file from `workflows/`
-4. Click "Execute Workflow" to test
-
----
-
-### PostgreSQL
-
-**Purpose:** State storage for n8n and Kong
-
-**Databases:**
-- `gateway`: n8n workflows and execution history
-- `kong`: Kong configuration (services, routes, plugins)
-
-**Backups:** See [Production Readiness](#production-readiness)
-
----
-
-### Observability Stack
-
-#### Prometheus (Metrics)
-
-Collects metrics from:
-- Kong (`/metrics` endpoint)
-- Redpanda (JMX metrics on port 9644)
-- Custom exporters (can add postgres_exporter, etc.)
-
-**Query metrics:** http://localhost:9090
-
-#### Grafana (Dashboards)
-
-Pre-configured data sources:
-- Prometheus (metrics)
-- Loki (logs)
-
-**View dashboards:** http://localhost:3002
-
-#### Loki (Logs)
-
-Log aggregation from all services.
-
-**Search logs:** http://localhost:3002 → Explore → Loki
-
----
-
-## 🔄 Integration Flows
-
-### 1. Samsara Webhook → NetSuite
-
-**Use Case:** When a delivery is completed in Samsara, update the NetSuite sales order status
-
-```mermaid
-sequenceDiagram
-    participant S as Samsara
-    participant K as Kong Gateway
-    participant R as Redpanda
-    participant N as n8n
-    participant NS as NetSuite
-
-    S->>K: POST /webhook/samsara<br/>{eventType: "delivery_completed"}
-    K->>K: Validate API Key
-    K->>K: Rate Limit Check
-    K->>N: Forward to n8n webhook
-    N->>R: Publish to samsara-events topic
-    N-->>K: 200 OK (fast response)
-    K-->>S: 200 OK
-
-    R->>N: Consume message
-    N->>N: Transform to NetSuite format
-    N->>NS: Update Sales Order (OAuth 1.0)
-    alt Success
-        NS-->>N: 200 OK
-        N->>R: Ack message
-    else Failure
-        NS-->>N: 500 Error
-        N->>N: Retry (3 attempts)
-        N->>R: Publish to dead-letter-queue
-    end
-```
-
-**Files:**
-- `workflows/samsara-to-netsuite.json`
-- Kong route: `/webhook/samsara`
-
----
-
-### 2. NetSuite Order → WMS Fulfillment
-
-**Use Case:** When a sales order is created in NetSuite, send to WMS for picking/packing
-
-```mermaid
-sequenceDiagram
-    participant NS as NetSuite
-    participant N as n8n (Poll)
-    participant R as Redpanda
-    participant W as WMS API
-
-    N->>NS: GET /salesorders?status=pending<br/>(every 5 min)
-    NS-->>N: [{order 1}, {order 2}]
-    N->>R: Publish to netsuite-orders topic
-
-    R->>N: Consume message
-    N->>N: Transform to WMS format
-    N->>W: POST /fulfillment/create
-    alt Success
-        W-->>N: 200 OK {fulfillmentId}
-        N->>NS: Update order with WMS ID
-        N->>R: Ack message
-    else Failure
-        W-->>N: 400 Error
-        N->>N: Retry with backoff
-        N->>R: Publish to dead-letter-queue
-    end
-```
-
-**Files:**
-- `workflows/netsuite-to-wms.json`
-- Trigger: Schedule (every 5 minutes)
-
----
-
-### 3. Unigroup EDI → NetSuite Purchase Order
-
-**Use Case:** Receive EDI 850 (Purchase Order) from Unigroup, create PO in NetSuite
-
-```mermaid
-sequenceDiagram
-    participant U as Unigroup SFTP
-    participant N as n8n (Poll SFTP)
-    participant R as Redpanda
-    participant NS as NetSuite
-
-    N->>U: List new EDI files
-    U-->>N: [PO_20260417_001.edi]
-    N->>N: Download & Parse EDI 850
-    N->>R: Publish to edi-inbound topic
-
-    R->>N: Consume message
-    N->>N: EDI → JSON transformation
-    N->>NS: Create Purchase Order (OAuth 1.0)
-    alt Success
-        NS-->>N: 200 OK {poId}
-        N->>U: Archive EDI file (move to /processed)
-        N->>R: Ack message
-    else Failure
-        NS-->>N: 422 Validation Error
-        N->>U: Move to /failed folder
-        N->>R: Publish to dead-letter-queue
-    end
-```
-
-**Files:**
-- `workflows/edi-to-netsuite.json`
-- Trigger: Schedule (every 10 minutes)
-
----
-
-## 🔒 Security
-
-### ⚠️ CRITICAL: This setup is for DEVELOPMENT ONLY
-
-**Do NOT run in production without addressing these issues:**
-
-| Issue | Risk | Fix |
-|-------|------|-----|
-| Secrets in `.env` | Credential leakage | Use secrets manager (Vault, AWS Secrets Manager) |
-| Kong Admin no auth | Anyone can modify routes | Restrict network access or add RBAC |
-| HTTP-only traffic | MITM attacks | Enable TLS/HTTPS |
-| No route auth | Unauthorized access | Add key-auth or OAuth plugins |
-| Default passwords | Trivial compromise | Generate strong random passwords |
-
-**See [Security Guide](docs/SECURITY.md) for complete checklist.**
-
-### Production Security Checklist
-
-- [ ] All secrets in secret manager (not in `.env` files)
-- [ ] Kong Admin API not publicly accessible
-- [ ] TLS certificates installed and HTTPS enforced
-- [ ] API authentication on all routes (key-auth minimum)
-- [ ] Rate limiting configured (per route, per consumer)
-- [ ] Strong passwords (64+ char random strings)
-- [ ] IP whitelisting where appropriate
-- [ ] Request size limits configured
-- [ ] Security headers added (X-Frame-Options, CSP, etc.)
-- [ ] Audit logging enabled
-
-**Plugin Examples:** [docs/kong-plugins.md](docs/kong-plugins.md)
-
----
-
-## 📊 Monitoring
-
-### Grafana Dashboards
-
-**Access:** http://localhost:3002 (admin / admin)
-
-**Pre-configured:**
-- Prometheus data source
-- Loki log source
-
-**Create dashboards for:**
-- API request rate (Kong metrics)
-- Error rates (4xx, 5xx)
-- Kafka lag (Redpanda metrics)
-- n8n workflow execution time
-- System resources (CPU, memory, disk)
-
-### Prometheus Queries
-
-**Access:** http://localhost:9090
-
-Example queries:
-```promql
-# Request rate per route
-rate(kong_http_requests_total[5m])
-
-# Error rate
-rate(kong_http_requests_total{code=~"5.."}[5m])
-
-# Redpanda throughput
-rate(redpanda_kafka_request_bytes_total[5m])
-```
-
-### Loki Logs
-
-**Access:** http://localhost:3002 → Explore → Loki
-
-Example queries:
-```logql
-# All Kong errors
-{container_name="gateway-kong"} |= "error"
-
-# n8n workflow failures
-{container_name="gateway-n8n"} |= "failed"
-
-# Slow requests (>1s)
-{container_name="gateway-kong"} | json | latency > 1000
-```
-
-### Alerting
-
-**Configure in Grafana:**
-1. Dashboards → Create Alert
-2. Set conditions (e.g., error rate > 1%)
-3. Add notification channel (Slack, PagerDuty, email)
-
-**Example alerts:**
-- Kong error rate > 5% for 5 minutes
-- Redpanda consumer lag > 10,000 messages
-- n8n workflow failure rate > 10%
-- Disk usage > 80%
-
----
-
-## 🛠️ Development
-
-### Project Structure
+## Repo layout
 
 ```
-gateway/
-├── docker-compose.yml          # Service definitions
-├── .env.example               # Environment template (NO SECRETS)
-├── .env                       # Local config (gitignored)
-├── scripts/
-│   ├── kong-setup.sh         # Initialize Kong routes
-│   └── test.sh               # Smoke tests
-├── workflows/                 # n8n workflow exports (JSON)
-│   ├── samsara-fleet-dashboard.json
-│   ├── netsuite-create-sales-order.json
-│   └── samsara-to-netsuite.json
+.
+├── docker-compose.yml               # Full HA topology
+├── kong/kong.yml                    # DB-less declarative Kong config
 ├── config/
+│   ├── kong/certs/                  # TLS (self-signed for dev; real certs in prod)
 │   ├── prometheus/
-│   │   └── prometheus.yml    # Prometheus scrape config
-│   └── grafana/
-│       └── provisioning/     # Data sources, dashboards
-└── docs/
-    ├── SECURITY.md           # Security guide
-    ├── kong-plugins.md       # Plugin examples
-    └── getting-started.md    # Detailed setup guide
-```
-
-### Common Commands
-
-```bash
-# Start all services
-docker compose up -d
-
-# View logs
-docker compose logs -f kong n8n redpanda
-
-# Restart a service
-docker compose restart n8n
-
-# Stop all services
-docker compose down
-
-# Stop and remove volumes (⚠️ deletes data)
-docker compose down -v
-
-# Execute command in container
-docker exec -it gateway-redpanda rpk topic list
-
-# Check service health
-docker compose ps
-```
-
-### Adding a New Integration
-
-1. **Create Kong route:**
-   ```bash
-   curl -X POST http://localhost:8001/services \
-     --data name=my-service \
-     --data url=http://n8n:5678/webhook/my-integration
-   
-   curl -X POST http://localhost:8001/services/my-service/routes \
-     --data paths[]=/my-integration
-   ```
-
-2. **Create Redpanda topic:**
-   ```bash
-   docker exec -it gateway-redpanda \
-     rpk topic create my-events --partitions 3
-   ```
-
-3. **Build n8n workflow:**
-   - Open http://localhost:5678
-   - Add Webhook Trigger node
-   - Add Kafka Producer node (topic: `my-events`)
-   - Add transformation logic
-   - Test and save
-
-4. **Export workflow:**
-   - n8n → Workflows → ... → Download
-   - Save to `workflows/my-integration.json`
-
-### Testing
-
-```bash
-# Run smoke tests
-./scripts/test.sh
-
-# Test a Kong route
-curl http://localhost:8000/samsara
-
-# Test with API key
-curl -H "X-API-Key: your-key" http://localhost:8000/samsara
-
-# Check Kong Admin API
-curl http://localhost:8001/services
-curl http://localhost:8001/routes
-
-# View Kafka messages
-# Open http://localhost:8080 → Topics → samsara-events
-
-# Manual Kafka publish
-echo '{"test": "data"}' | docker exec -i gateway-redpanda \
-  rpk topic produce samsara-events
+│   │   ├── prometheus.yml
+│   │   └── rules/gateway.rules.yml
+│   ├── alertmanager/alertmanager.yml
+│   ├── grafana/
+│   │   ├── provisioning/{datasources,dashboards}/
+│   │   └── dashboards/
+│   ├── loki/loki-config.yaml
+│   └── promtail/promtail.yml
+├── workflows/                       # n8n workflow exports
+├── scripts/
+│   ├── setup.sh                     # first-time setup (TLS cert + up)
+│   ├── test.sh                      # smoke test
+│   ├── validate-config.sh           # preflight
+│   ├── create-topics.sh             # partitions=N, RF=3, min.insync=2, zstd
+│   ├── kong-setup.sh                # hot-reload kong/kong.yml
+│   ├── backup.sh                    # age-encrypted; retention-enforced
+│   ├── restore.sh
+│   └── cron/gateway-crontab
+├── docs/
+│   ├── SECURITY.md                  # controls in place + pre-prod checklist
+│   ├── DEPLOYMENT-CHECKLIST.md
+│   ├── getting-started.md
+│   ├── kong-plugins.md              # reference
+│   ├── netsuite-integration.md
+│   ├── samsara-integration.md
+│   └── workflow-resilience.md
+└── .github/workflows/ci.yml         # gitleaks + Trivy + smoke test
 ```
 
 ---
 
-## 🏭 Production Readiness
+## License
 
-### Current Status: **NOT PRODUCTION READY**
-
-This is a functional development/staging environment. Before production deployment:
-
-### Critical Fixes Required
-
-1. **Secrets Management**
-   - Move to HashiCorp Vault, AWS Secrets Manager, or similar
-   - Rotate all credentials immediately
-   - Remove `.env` file from servers
-
-2. **Network Security**
-   - Do not expose Kong Admin (8001, 8002) publicly
-   - Use VPN or SSH tunnels for admin access
-   - Add firewall rules
-
-3. **TLS/HTTPS**
-   - Obtain SSL certificates (Let's Encrypt, CA, etc.)
-   - Configure Kong to terminate TLS
-   - Force HTTPS redirects
-
-4. **Authentication & Authorization**
-   - Add key-auth or OAuth to all routes
-   - Implement rate limiting per consumer
-   - Add IP whitelisting where needed
-
-5. **High Availability**
-   - Run 3+ Redpanda nodes (not single-node dev mode)
-   - Set up replication factor = 3
-   - Use managed PostgreSQL (RDS, Cloud SQL, etc.)
-   - Run multiple Kong instances behind load balancer
-
-### Recommended Production Architecture
-
-```
-Internet
-   ↓
-Load Balancer (AWS ALB / Nginx)
-   ↓ (HTTPS only)
-Kong Instances (3+) - behind private network
-   ↓
-Redpanda Cluster (3+ nodes)
-   ↓
-n8n Instances (2+)
-   ↓
-Managed PostgreSQL (RDS/Cloud SQL)
-```
-
-### Backup & Disaster Recovery
-
-**PostgreSQL:**
-```bash
-# Backup
-docker exec gateway-postgres pg_dump -U gateway gateway > backup.sql
-
-# Restore
-docker exec -i gateway-postgres psql -U gateway gateway < backup.sql
-```
-
-**Redpanda:**
-```bash
-# Enable topic backups to S3
-rpk cluster config set cloud_storage_enabled true
-```
-
-**n8n Workflows:**
-- Workflows are stored in PostgreSQL (backed up above)
-- Export critical workflows to git: `workflows/*.json`
-
-### Deployment Options
-
-**Option A: Docker Swarm**
-- Convert `docker-compose.yml` to Swarm stack
-- Use Docker secrets
-- Built-in load balancing
-
-**Option B: Kubernetes**
-- Helm charts for Kong, Redpanda, n8n
-- Use K8s secrets/ConfigMaps
-- Horizontal pod autoscaling
-
-**Option C: Cloud-Managed**
-- Kong: Kong Konnect (managed SaaS)
-- Redpanda: Redpanda Cloud
-- n8n: n8n Cloud or self-host on ECS/GKE
-- PostgreSQL: RDS/Cloud SQL
-
-### Monitoring & Alerting
-
-**Production monitoring stack:**
-- Prometheus (or managed: Grafana Cloud, Datadog)
-- Grafana dashboards for each service
-- PagerDuty/OpsGenie for on-call alerts
-- Structured logging (ELK stack or Grafana Loki)
-
-**Key metrics to alert on:**
-- Error rate > 1%
-- Latency p99 > 2 seconds
-- Redpanda consumer lag > 10k messages
-- Disk usage > 80%
-- Memory usage > 90%
-- Health check failures
-
-### Performance Testing
-
-**Before production:**
-```bash
-# Load test Kong routes
-hey -n 10000 -c 100 http://localhost:8000/samsara
-
-# Kafka throughput test
-rpk topic produce samsara-events --num 100000
-
-# n8n workflow stress test
-# (Trigger workflow 1000x and measure execution time)
-```
-
-**Target benchmarks:**
-- Kong: 5k+ req/sec per instance
-- Redpanda: 1M+ msg/sec (cluster)
-- n8n: <500ms workflow execution (p95)
-
----
-
-## 📚 Documentation
-
-- [Getting Started Guide](docs/getting-started.md)
-- [Security Guide](docs/SECURITY.md)
-- [Kong Plugin Examples](docs/kong-plugins.md)
-- [NetSuite Integration](docs/integrations/netsuite.md)
-- [Samsara Integration](docs/integrations/samsara.md)
-
----
-
-## 🤝 Contributing
-
-This is an internal project. For questions or issues:
-
-1. Check existing documentation in `docs/`
-2. Review logs: `docker compose logs -f`
-3. Check service health: `docker compose ps`
-
----
-
-## 📝 License
-
-Proprietary - Internal Use Only
-
----
-
-## 🔗 Resources
-
-- [Kong Gateway Docs](https://docs.konghq.com/)
-- [Redpanda Docs](https://docs.redpanda.com/)
-- [n8n Docs](https://docs.n8n.io/)
-- [Prometheus Docs](https://prometheus.io/docs/)
-- [Grafana Docs](https://grafana.com/docs/)
-
----
-
-**Version:** 1.0.0  
-**Last Updated:** April 17, 2026  
-**Maintainer:** DevOps Team
+Internal - all rights reserved.
