@@ -18,7 +18,7 @@ services:
       - redpanda
       - start
       - --node-id=0
-      - --mode=dev-container
+      - --seeds=redpanda-0:33145
       - --kafka-addr=INTERNAL://0.0.0.0:29092,EXTERNAL://0.0.0.0:9092
       - --advertise-kafka-addr=INTERNAL://redpanda-0:29092,EXTERNAL://localhost:9092
       - --rpc-addr=0.0.0.0:33145
@@ -27,8 +27,10 @@ services:
       - --advertise-pandaproxy-addr=INTERNAL://redpanda-0:28082
       - --set=redpanda.default_topic_replications=1
       - --set=redpanda.auto_create_topics_enabled=false
+      - --set=redpanda.empty_seed_starts_cluster=true
       - --smp=1
       - --memory=1G
+      - --overprovisioned
     deploy:
       resources:
         limits: { cpus: '1.5', memory: 1536M }
