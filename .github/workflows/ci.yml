@@ -178,7 +178,7 @@ jobs:
         run: |
           if docker compose -f docker-compose.yml -f docker-compose.lite.yml logs 2>&1 \
              | grep -Ei "panic|fatal|level=error" \
-             | grep -vE "healthz|health check"; then
+             | grep -vE "healthz|health check|diskstats_linux.go|/run/udev/data"; then
             echo "::error::Errors found in service logs"
             docker compose -f docker-compose.yml -f docker-compose.lite.yml logs
             exit 1

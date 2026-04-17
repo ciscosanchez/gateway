@@ -1,5 +1,9 @@
 global:
   resolve_timeout: 5m
+  # Placeholder URLs so the config parses when env vars are unset.
+  # Override via ALERTMANAGER_SLACK_WEBHOOK / ALERTMANAGER_PAGERDUTY_KEY
+  # by mounting a rendered alertmanager.yml in production.
+  slack_api_url: "https://hooks.slack.com/services/REPLACE-ME"
 
 route:
   receiver: default
@@ -20,8 +24,7 @@ receivers:
 
   - name: slack
     slack_configs:
-      - api_url: "${ALERTMANAGER_SLACK_WEBHOOK}"
-        send_resolved: true
+      - send_resolved: true
         channel: "#gateway-alerts"
         title: "[{{ .Status | toUpper }}] {{ .CommonLabels.alertname }}"
         text: |
@@ -33,7 +36,7 @@ receivers:
 
   - name: pagerduty
     pagerduty_configs:
-      - routing_key: "${ALERTMANAGER_PAGERDUTY_KEY}"
+      - routing_key: "REPLACE-ME-WITH-PAGERDUTY-INTEGRATION-KEY"
         send_resolved: true
         description: "{{ .CommonAnnotations.summary }}"
 
