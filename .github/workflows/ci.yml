@@ -154,7 +154,7 @@ jobs:
             -subj "/CN=localhost"
       - name: docker compose up (lite profile for CI)
         id: compose_up
-        run: docker compose -f docker-compose.yml -f docker-compose.lite.yml up -d --wait --wait-timeout 240
+        run: docker compose -f docker-compose.yml -f docker-compose.lite.yml up -d --wait --wait-timeout 420
       - name: Dump logs on failure
         if: failure() && steps.compose_up.outcome == 'failure'
         run: |
