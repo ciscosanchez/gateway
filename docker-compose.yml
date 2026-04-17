@@ -234,10 +234,11 @@ services:
       KONG_ADMIN_ACCESS_LOG: /dev/stdout
       KONG_PROXY_ERROR_LOG: /dev/stderr
       KONG_ADMIN_ERROR_LOG: /dev/stderr
-      # Admin API only on loopback inside container; we also only publish to 127.0.0.1
-      KONG_ADMIN_LISTEN: "127.0.0.1:8001"
+      # Admin API listens on all interfaces inside the container; loopback
+      # restriction is enforced at the docker port publish level (127.0.0.1:8001:8001)
+      KONG_ADMIN_LISTEN: "0.0.0.0:8001"
       KONG_ADMIN_GUI_URL: "http://localhost:8002"
-      KONG_ADMIN_GUI_LISTEN: "127.0.0.1:8002"
+      KONG_ADMIN_GUI_LISTEN: "0.0.0.0:8002"
       # Proxy listeners (HTTP redirects to HTTPS via route-level plugin)
       KONG_PROXY_LISTEN: "0.0.0.0:8000, 0.0.0.0:8443 ssl http2"
       # Allow our pre-function plugin to use resty libs
