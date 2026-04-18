@@ -1,9 +1,9 @@
 global:
   resolve_timeout: 5m
-  # Placeholder URLs so the config parses when env vars are unset.
-  # Override via ALERTMANAGER_SLACK_WEBHOOK / ALERTMANAGER_PAGERDUTY_KEY
-  # by mounting a rendered alertmanager.yml in production.
-  slack_api_url: "https://hooks.slack.com/services/REPLACE-ME"
+  # $ALERTMANAGER_SLACK_WEBHOOK is substituted at container start by
+  # entrypoint.sh. If unset, this field is empty and the slack receiver is
+  # effectively a no-op (send will fail, alerts still fire to PagerDuty/default).
+  slack_api_url: "${ALERTMANAGER_SLACK_WEBHOOK}"
 
 route:
   receiver: default
@@ -36,7 +36,7 @@ receivers:
 
   - name: pagerduty
     pagerduty_configs:
-      - routing_key: "REPLACE-ME-WITH-PAGERDUTY-INTEGRATION-KEY"
+      - routing_key: "${ALERTMANAGER_PAGERDUTY_KEY}"
         send_resolved: true
         description: "{{ .CommonAnnotations.summary }}"
 
