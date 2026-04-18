@@ -112,10 +112,10 @@ jobs:
           exit-code: "1"
           ignore-unfixed: true
 
-      - name: Trivy image scans (non-blocking; upstream image hygiene)
-        continue-on-error: true
+      - name: Trivy image scans - CRITICAL fixable only, blocking
         run: |
-          set -e
+          set -eu
+          failed=""
           for image in \
             kong/kong-gateway:3.6 \
             redpandadata/redpanda:v24.1.7 \
@@ -129,10 +129,16 @@ jobs:
             grafana/promtail:2.9.6
           do
             echo "=== $image ==="
-            docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
-              aquasec/trivy:latest image --quiet --no-progress \
-              --severity CRITICAL --ignore-unfixed "$image" || true
+            if ! docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
+                 aquasec/trivy:latest image --quiet --no-progress \
+                 --severity CRITICAL --ignore-unfixed --exit-code 1 "$image"; then
+              failed="${failed} ${image}"
+            fi
           done
+          if [ -n "${failed}" ]; then
+            echo "::error::Images with fixable CRITICAL CVEs:${failed}"
+            exit 1
+          fi
 
   # ---------------------------------------------------------------------------
   # Smoke test - bring up stack and hit Kong
