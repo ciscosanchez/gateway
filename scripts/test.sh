@@ -38,6 +38,29 @@ check "Kong proxy HTTPS (no key → 401)"        https://localhost:8443/samsara 
 check "Kong proxy HTTPS (route missing → 404)" https://localhost:8443/does-not-exist 404
 
 echo ""
+echo "── Rate limiting (burst past the 100/min quota → expect 429) ──"
+# Use a dev consumer key; 101 rapid requests should trip the limit.
+# Only runs if SMOKE_API_KEY is set, since this requires a real key.
+if [ -n "${SMOKE_API_KEY:-}" ]; then
+  seen_429=0
+  for i in $(seq 1 110); do
+    c=$(curl -sk -o /dev/null -w "%{http_code}" \
+        -H "X-API-Key: ${SMOKE_API_KEY}" -XPOST \
+        "https://localhost:8443/samsara" || echo 000)
+    if [ "$c" = "429" ]; then seen_429=1; break; fi
+  done
+  if [ "$seen_429" = "1" ]; then
+    echo -e "${GREEN}✓${NC} rate-limit triggered 429 within 110 requests"
+    pass=$((pass+1))
+  else
+    echo -e "${RED}✗${NC} no 429 seen after 110 requests (rate-limiting may be misconfigured)"
+    fail=$((fail+1))
+  fi
+else
+  echo "  (skipped: set SMOKE_API_KEY=<dev key> to run)"
+fi
+
+echo ""
 echo "── Public exposure sanity (these MUST be blocked from the public IP) ──"
 for port in 8001 8002 5678 8080 3002 9090 9093 3100; do
   # On this host we bind to 127.0.0.1 only, so curl to 127.0.0.1 works but

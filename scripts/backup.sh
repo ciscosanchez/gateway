@@ -16,10 +16,15 @@ mkdir -p "${OUT_DIR}"
 echo "🗄️  Gateway backup → ${OUT_DIR}"
 
 have_age=0
+ALLOW_PLAINTEXT="${ALLOW_PLAINTEXT_BACKUP:-0}"
 if command -v age >/dev/null 2>&1 && [ -n "${RECIPIENT}" ] && [[ "${RECIPIENT}" =~ ^age1 ]]; then
   have_age=1
+elif [ "${ALLOW_PLAINTEXT}" = "1" ]; then
+  echo "⚠️  ALLOW_PLAINTEXT_BACKUP=1: proceeding WITHOUT encryption."
 else
-  echo "⚠️  age not configured (install age + set BACKUP_AGE_RECIPIENT). Backups will be PLAINTEXT."
+  echo "❌  age not configured. Set BACKUP_AGE_RECIPIENT in .env to an age1... pubkey," >&2
+  echo "    or set ALLOW_PLAINTEXT_BACKUP=1 to force an unencrypted dump (not recommended)." >&2
+  exit 1
 fi
 
 encrypt_inline() {

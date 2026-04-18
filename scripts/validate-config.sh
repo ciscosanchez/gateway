@@ -42,6 +42,9 @@ if [ -f kong/kong.yml ]; then
   if grep -q "REPLACE_ME_.*_api_key" kong/kong.yml; then
     warn "kong/kong.yml still contains placeholder API keys"
   fi
+  if grep -q "gateway.example.com" kong/kong.yml; then
+    warn "kong/kong.yml CORS origin still references example.com - pin to real caller origin"
+  fi
   if ! grep -q "name: key-auth" kong/kong.yml; then
     err "kong/kong.yml missing global key-auth plugin"
   fi
@@ -50,6 +53,19 @@ if [ -f kong/kong.yml ]; then
   fi
 else
   err "kong/kong.yml missing"
+fi
+
+# --- Alertmanager rendering ---
+if [ -f config/alertmanager/alertmanager.yml.tpl ] && [ -f config/alertmanager/entrypoint.sh ]; then
+  ok "alertmanager template + entrypoint present"
+  if [ -f .env ]; then
+    if ! grep -qE "^ALERTMANAGER_SLACK_WEBHOOK=https://hooks\.slack\.com/" .env && \
+       ! grep -qE "^ALERTMANAGER_PAGERDUTY_KEY=.{20,}$" .env; then
+      warn "Neither ALERTMANAGER_SLACK_WEBHOOK nor ALERTMANAGER_PAGERDUTY_KEY is set - alerts will fire to /dev/null"
+    fi
+  fi
+else
+  err "config/alertmanager/alertmanager.yml.tpl or entrypoint.sh missing"
 fi
 
 # --- TLS certs ---

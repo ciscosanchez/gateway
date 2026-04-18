@@ -4,7 +4,10 @@ In-house integration platform: **Kong** (DB-less) → **Redpanda** (3-node Kafka
 
 **Integrations:** Samsara • NetSuite • Unigroup EDI • WMS • Custom APIs
 
-> **Status:** production-capable on a single host via `docker-compose`. Review
+> **Status:** HA-ready stack (3-broker Redpanda, queue-mode n8n workers, shared
+> rate-limit counters) that runs on a single host via `docker-compose` for
+> staging / small-scale production. **True HA requires ≥3 hosts**: on a single
+> host the box itself is a SPOF regardless of replication. Review
 > [`docs/SECURITY.md`](docs/SECURITY.md) and
 > [`docs/DEPLOYMENT-CHECKLIST.md`](docs/DEPLOYMENT-CHECKLIST.md) before
 > pointing real traffic at any instance you don't control end-to-end.
