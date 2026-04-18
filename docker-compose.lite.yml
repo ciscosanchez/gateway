@@ -7,8 +7,8 @@
 #   - redpanda-0 runs standalone (1 broker), replication factor 1
 #   - redpanda-1, redpanda-2, n8n-worker, loki, promtail are gated behind
 #     profiles ("ha" / "logs") in the base compose, so they don't start.
-#   - Prometheus only scrapes redpanda-0.
-#   - Redpanda Console and n8n point at redpanda-0 only.
+#   - Prometheus uses prometheus.lite.yml (only scrapes redpanda-0, no loki job).
+#   - redpanda-console already points at redpanda-0 only in the base compose.
 #
 # Do NOT use this for production. Single broker = data loss on crash.
 
@@ -39,10 +39,8 @@ services:
         limits: { cpus: '1.5', memory: 1536M }
         reservations: { cpus: '0.5', memory: 512M }
 
-  redpanda-console:
-    environment:
-      KAFKA_BROKERS: redpanda-0:29092
-
-  n8n:
-    environment:
-      KAFKA_BOOTSTRAP_SERVERS: redpanda-0:29092
+  prometheus:
+    volumes:
+      - ./config/prometheus/prometheus.lite.yml:/etc/prometheus/prometheus.yml:ro
+      - ./config/prometheus/rules:/etc/prometheus/rules:ro
+      - prometheus_data:/prometheus

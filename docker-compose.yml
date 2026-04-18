@@ -208,7 +208,10 @@ services:
     container_name: gateway-redpanda-console
     <<: *default-restart
     environment:
-      KAFKA_BROKERS: redpanda-0:29092,redpanda-1:29092,redpanda-2:29092
+      # Only reference redpanda-0 as the bootstrap broker. Console discovers
+      # the rest of the cluster from metadata, so this works whether 1 or 3
+      # brokers are running (base vs. ha profile vs. lite overlay).
+      KAFKA_BROKERS: redpanda-0:29092
     # Admin UI - loopback only
     ports:
       - "127.0.0.1:8080:8080"
@@ -246,8 +249,10 @@ services:
       KONG_PLUGINS: "bundled"
       # Redis for shared rate-limit counters
       KONG_NGINX_WORKER_PROCESSES: "auto"
-      # Trust X-Forwarded-* from LB only
-      KONG_TRUSTED_IPS: "0.0.0.0/0,::/0"
+      # Trust X-Forwarded-* only from the LB / internal network. Default covers
+      # loopback + RFC1918 (docker bridge, typical VPC CIDRs). In production,
+      # set KONG_TRUSTED_IPS in .env to your LB's private CIDR only.
+      KONG_TRUSTED_IPS: ${KONG_TRUSTED_IPS:-127.0.0.1/32,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16}
       KONG_REAL_IP_HEADER: "X-Forwarded-For"
       KONG_REAL_IP_RECURSIVE: "on"
       # Stricter TLS defaults
@@ -267,10 +272,13 @@ services:
       - "127.0.0.1:8001:8001"
       - "127.0.0.1:8002:8002"
     healthcheck:
-      test: ["CMD", "kong", "health"]
+      # Prove admin API responds (declarative config loaded + nginx up),
+      # not just that the kong process exists.
+      test: ["CMD-SHELL", "kong health && curl -fsS http://127.0.0.1:8001/status >/dev/null"]
       interval: 10s
       timeout: 5s
       retries: 10
+      start_period: 30s
     deploy:
       resources:
         limits: { cpus: '2.0', memory: 2G }
@@ -374,8 +382,9 @@ services:
       SAMSARA_WEBHOOK_SECRET: ${SAMSARA_WEBHOOK_SECRET}
       NETSUITE_ACCOUNT_ID: ${NETSUITE_ACCOUNT_ID}
     depends_on:
-      n8n:   { condition: service_healthy }
-      redis: { condition: service_healthy }
+      postgres: { condition: service_healthy }
+      redis:    { condition: service_healthy }
+      n8n:      { condition: service_healthy }
     deploy:
       replicas: 2
       resources:
@@ -416,16 +425,24 @@ services:
     container_name: gateway-alertmanager
     <<: *default-restart
     volumes:
-      - ./config/alertmanager/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+      - ./config/alertmanager/alertmanager.yml.tpl:/etc/alertmanager/alertmanager.yml.tpl:ro
+      - ./config/alertmanager/entrypoint.sh:/entrypoint.sh:ro
       - alertmanager_data:/alertmanager
     environment:
       ALERTMANAGER_SLACK_WEBHOOK: ${ALERTMANAGER_SLACK_WEBHOOK:-}
       ALERTMANAGER_PAGERDUTY_KEY: ${ALERTMANAGER_PAGERDUTY_KEY:-}
+    entrypoint: ["/bin/sh", "/entrypoint.sh"]
     command:
-      - '--config.file=/etc/alertmanager/alertmanager.yml'
+      - '--config.file=/tmp/alertmanager.yml'
       - '--storage.path=/alertmanager'
     ports:
       - "127.0.0.1:9093:9093"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --tries=1 --spider http://localhost:9093/-/ready || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
     networks: [gateway-network]
     logging: *default-logging
 
@@ -499,8 +516,13 @@ services:
       GF_SECURITY_DISABLE_GRAVATAR: "true"
       GF_USERS_ALLOW_SIGN_UP: "false"
       GF_AUTH_ANONYMOUS_ENABLED: "false"
-      GF_SECURITY_COOKIE_SECURE: "true"
-      GF_SECURITY_STRICT_TRANSPORT_SECURITY: "true"
+      # Grafana admin is bound to 127.0.0.1 only and is intended to be reached
+      # via SSH tunnel (plain HTTP over the tunnel) OR behind an HTTPS reverse
+      # proxy. Default cookie_secure=false so direct loopback access works;
+      # flip to true in .env once you front Grafana with HTTPS.
+      GF_SECURITY_COOKIE_SECURE: ${GF_SECURITY_COOKIE_SECURE:-false}
+      GF_SECURITY_COOKIE_SAMESITE: "lax"
+      GF_SECURITY_STRICT_TRANSPORT_SECURITY: ${GF_SECURITY_STRICT_TRANSPORT_SECURITY:-false}
       GF_SECURITY_CONTENT_SECURITY_POLICY: "true"
       GF_INSTALL_PLUGINS: "grafana-clock-panel"
     volumes:
@@ -528,6 +550,12 @@ services:
     expose: ["3100"]
     ports:
       - "127.0.0.1:3100:3100"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --tries=1 --spider http://localhost:3100/ready || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
     networks: [gateway-network]
     logging: *default-logging
 
