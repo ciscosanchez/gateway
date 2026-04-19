@@ -1,0 +1,219 @@
+{
+  "name": "Alertmanager to Zammad (dedup + severity filter)",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "alertmanager",
+        "responseMode": "responseNode",
+        "options": { "rawBody": false }
+      },
+      "name": "Alertmanager Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [200, 320],
+      "webhookId": "alertmanager-to-zammad"
+    },
+    {
+      "parameters": {
+        "functionCode": "// Shape incoming Alertmanager payload into the fields we need downstream.\n// Filters + rules here:\n//   - severity != 'critical' -> skip (Slack still fires from Alertmanager)\n//   - dedup key = sha256(groupKey) truncated to 16 chars, prefixed 'gw-'\n//   - firing -> create/update; resolved -> add 'auto-resolved' note (don't\n//     close; operators manually close so stale resolved-then-fires aren't\n//     hidden behind a wrongly-closed ticket).\n//\n// Expected Alertmanager webhook shape:\n//   { status, groupKey, commonLabels{severity,alertname,...}, commonAnnotations{summary,description}, alerts:[...] }\nconst crypto = require('crypto');\nconst body = $input.item.json;\n\nconst zammadUrl   = ($env.ZAMMAD_URL || '').replace(/\\/+$/, '');\nconst zammadToken = $env.ZAMMAD_API_TOKEN;\nif (!zammadUrl || !zammadToken || zammadToken === 'CHANGE_ME') {\n  throw new Error('ZAMMAD_URL / ZAMMAD_API_TOKEN not configured');\n}\n\nconst status    = (body.status || '').toLowerCase();          // firing | resolved\nconst labels    = body.commonLabels || {};\nconst annot     = body.commonAnnotations || {};\nconst severity  = (labels.severity || '').toLowerCase();\nconst alertname = labels.alertname || body.groupLabels?.alertname || 'unknown';\n\nif (severity !== 'critical') {\n  return { json: { skip: true, reason: `severity=${severity||'unset'} not critical`, status_code: 204 } };\n}\n\nconst dedupKey = 'gw-' + crypto.createHash('sha256')\n  .update(body.groupKey || `${alertname}|${JSON.stringify(labels)}`)\n  .digest('hex').slice(0, 16);\n\nconst lines = [];\nlines.push(`Gateway status: ${status.toUpperCase()}`);\nlines.push(`Alert: ${alertname}`);\nlines.push(`Severity: ${severity}`);\nif (annot.summary)     lines.push('', 'Summary:',     annot.summary);\nif (annot.description) lines.push('', 'Description:', annot.description);\nlines.push('', `Alerts in group (${(body.alerts||[]).length}):`);\nfor (const a of (body.alerts || []).slice(0, 20)) {\n  const inst = a.labels?.instance || a.labels?.service || a.labels?.job || '?';\n  lines.push(`  - [${a.status||'?'}] ${inst}  ${a.annotations?.summary || ''}  (since ${a.startsAt})`);\n  if (a.generatorURL) lines.push(`      ${a.generatorURL}`);\n}\n\nreturn {\n  json: {\n    skip:        false,\n    status,\n    alertname,\n    severity,\n    dedup_key:   dedupKey,\n    title:       `[${alertname}] ${annot.summary || 'gateway alert'}`.slice(0, 200),\n    article_subject: (annot.summary || alertname).slice(0, 200),\n    article_body:    lines.join('\\n'),\n    zammad_url:     zammadUrl,\n    zammad_token:   zammadToken,\n    zammad_group:   $env.ZAMMAD_GROUP    || 'Users',\n    zammad_customer:$env.ZAMMAD_CUSTOMER || 'info@goarmstrong.com',\n    raw:            body\n  }\n};"
+      },
+      "name": "Parse + Filter",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [420, 320]
+    },
+    {
+      "parameters": {
+        "conditions": { "boolean": [ { "value1": "={{ $json.skip }}", "value2": true } ] }
+      },
+      "name": "Skip?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [640, 320]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { accepted: false, skipped: true, reason: $json.reason } }}",
+        "options": { "responseCode": 204 }
+      },
+      "name": "Skipped Response",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [860, 200]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $json.zammad_url }}/api/v1/tickets/search",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Authorization", "value": "=Token token={{ $json.zammad_token }}" },
+            { "name": "Accept",        "value": "application/json" }
+          ]
+        },
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            { "name": "query", "value": "=external_id:{{ $json.dedup_key }}" },
+            { "name": "limit", "value": "1" }
+          ]
+        },
+        "options": { "timeout": 10000 }
+      },
+      "name": "Find existing ticket",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [860, 420]
+    },
+    {
+      "parameters": {
+        "functionCode": "// Zammad's /tickets/search returns either an array or an object with\n// tickets_count + assets.Ticket. Normalize to a single ticket_id or null.\nconst resp = $input.item.json;\nconst ctx  = $('Parse + Filter').item.json;\nlet existing_id = null;\nif (Array.isArray(resp) && resp.length) {\n  existing_id = resp[0]?.id || resp[0]?.ticket_id || null;\n} else if (resp && resp.tickets && Array.isArray(resp.tickets) && resp.tickets.length) {\n  existing_id = resp.tickets[0];\n} else if (resp && resp.assets && resp.assets.Ticket) {\n  const ids = Object.keys(resp.assets.Ticket);\n  if (ids.length) existing_id = parseInt(ids[0], 10);\n}\nreturn { json: { ...ctx, existing_id } };"
+      },
+      "name": "Extract ticket id",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [1080, 420]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [ { "value1": "={{ $json.existing_id !== null && $json.existing_id !== undefined }}", "value2": true } ]
+        }
+      },
+      "name": "Ticket exists?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [1300, 420]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $json.zammad_url }}/api/v1/ticket_articles",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Authorization", "value": "=Token token={{ $json.zammad_token }}" },
+            { "name": "Content-Type",  "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({\n  ticket_id: $json.existing_id,\n  subject:   ($json.status === 'resolved' ? '[auto-resolved] ' : '[re-fire] ') + $json.article_subject,\n  body:      $json.article_body,\n  type:      'note',\n  internal:  false\n}) }}",
+        "options": { "timeout": 10000 }
+      },
+      "name": "Append article",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [1520, 320]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $json.zammad_url }}/api/v1/tickets",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Authorization", "value": "=Token token={{ $json.zammad_token }}" },
+            { "name": "Content-Type",  "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({\n  title:      $json.title,\n  group:      $json.zammad_group,\n  customer:   $json.zammad_customer,\n  state:      'new',\n  priority:   '3 high',\n  external_id:$json.dedup_key,\n  article: { subject: $json.article_subject, body: $json.article_body, type: 'note', internal: false }\n}) }}",
+        "options": { "timeout": 10000 }
+      },
+      "name": "Create ticket",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [1520, 520]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { accepted: true, zammad_action: $('Ticket exists?').item.json.existing_id ? 'appended' : 'created', dedup_key: $('Parse + Filter').item.json.dedup_key } }}",
+        "options": { "responseCode": 200 }
+      },
+      "name": "OK Response",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [1740, 420]
+    },
+    {
+      "parameters": {
+        "functionCode": "const err = $input.item.json;\nreturn { json: {\n  workflow: 'alertmanager-to-zammad',\n  error:   err.message || err.error || 'unknown',\n  status:  err.status || err.statusCode || 500,\n  raw:     err,\n  timestamp: new Date().toISOString()\n}};"
+      },
+      "name": "Handle Error",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [1080, 640]
+    },
+    {
+      "parameters": {
+        "operation": "sendMessage",
+        "topic": "errors-dlq",
+        "sendInputData": false,
+        "jsonMessage": "={{ JSON.stringify($json) }}",
+        "options": { "acks": -1, "compression": "gzip" }
+      },
+      "name": "Send to DLQ",
+      "type": "n8n-nodes-base.kafka",
+      "typeVersion": 1,
+      "position": [1300, 640],
+      "credentials": { "kafka": { "id": "redpanda", "name": "Redpanda (internal)" } }
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { accepted: false, error: $json.error } }}",
+        "options": { "responseCode": 500 }
+      },
+      "name": "Error Response",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [1520, 640]
+    }
+  ],
+  "connections": {
+    "Alertmanager Webhook": { "main": [[{ "node": "Parse + Filter", "type": "main", "index": 0 }]] },
+    "Parse + Filter": {
+      "main":  [[{ "node": "Skip?", "type": "main", "index": 0 }]],
+      "error": [[{ "node": "Handle Error", "type": "main", "index": 0 }]]
+    },
+    "Skip?": {
+      "main": [
+        [{ "node": "Skipped Response",       "type": "main", "index": 0 }],
+        [{ "node": "Find existing ticket",   "type": "main", "index": 0 }]
+      ]
+    },
+    "Find existing ticket": {
+      "main":  [[{ "node": "Extract ticket id", "type": "main", "index": 0 }]],
+      "error": [[{ "node": "Handle Error", "type": "main", "index": 0 }]]
+    },
+    "Extract ticket id": { "main": [[{ "node": "Ticket exists?", "type": "main", "index": 0 }]] },
+    "Ticket exists?": {
+      "main": [
+        [{ "node": "Append article", "type": "main", "index": 0 }],
+        [{ "node": "Create ticket",  "type": "main", "index": 0 }]
+      ]
+    },
+    "Append article": {
+      "main":  [[{ "node": "OK Response", "type": "main", "index": 0 }]],
+      "error": [[{ "node": "Handle Error", "type": "main", "index": 0 }]]
+    },
+    "Create ticket": {
+      "main":  [[{ "node": "OK Response", "type": "main", "index": 0 }]],
+      "error": [[{ "node": "Handle Error", "type": "main", "index": 0 }]]
+    },
+    "Handle Error": { "main": [[{ "node": "Send to DLQ", "type": "main", "index": 0 }]] },
+    "Send to DLQ":  { "main": [[{ "node": "Error Response", "type": "main", "index": 0 }]] }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveDataErrorExecution": "all",
+    "saveDataSuccessExecution": "none",
+    "timezone": "America/Los_Angeles"
+  }
+}

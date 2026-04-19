@@ -66,6 +66,10 @@ REGISTRY: dict[str, dict] = {
     # --- Alerting / backup ---
     "ALERTMANAGER_SLACK_WEBHOOK": {"integration": "Alerting", "kind": "secret", "services": ["alertmanager"]},
     "ALERTMANAGER_PAGERDUTY_KEY": {"integration": "Alerting", "kind": "secret", "services": ["alertmanager"]},
+    "ZAMMAD_URL":                 {"integration": "Zammad",   "kind": "config", "services": N8N},
+    "ZAMMAD_API_TOKEN":           {"integration": "Zammad",   "kind": "secret", "services": N8N},
+    "ZAMMAD_GROUP":               {"integration": "Zammad",   "kind": "config", "services": N8N},
+    "ZAMMAD_CUSTOMER":            {"integration": "Zammad",   "kind": "config", "services": N8N},
     "BACKUP_AGE_RECIPIENT":       {"integration": "Backup",   "kind": "config", "services": []},
 
     # --- Admin UI gate ---

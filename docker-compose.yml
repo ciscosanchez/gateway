@@ -348,6 +348,11 @@ services:
       UNIGROUP_GRAPHQL_URL_PROD: ${UNIGROUP_GRAPHQL_URL_PROD:-https://api.unigroup.com/graphql}
       UNIGROUP_DOCS_URL_STAGING: ${UNIGROUP_DOCS_URL_STAGING:-https://api.cloud1.unigroup.com/documents}
       UNIGROUP_DOCS_URL_PROD: ${UNIGROUP_DOCS_URL_PROD:-https://api.unigroup.com/documents}
+      # Zammad helpdesk (used by the alertmanager-to-zammad workflow)
+      ZAMMAD_URL: ${ZAMMAD_URL:-}
+      ZAMMAD_API_TOKEN: ${ZAMMAD_API_TOKEN:-}
+      ZAMMAD_GROUP: ${ZAMMAD_GROUP:-Users}
+      ZAMMAD_CUSTOMER: ${ZAMMAD_CUSTOMER:-}
     volumes:
       - n8n_data:/home/node/.n8n
     expose:
@@ -411,6 +416,10 @@ services:
       UNIGROUP_GRAPHQL_URL_PROD: ${UNIGROUP_GRAPHQL_URL_PROD:-https://api.unigroup.com/graphql}
       UNIGROUP_DOCS_URL_STAGING: ${UNIGROUP_DOCS_URL_STAGING:-https://api.cloud1.unigroup.com/documents}
       UNIGROUP_DOCS_URL_PROD: ${UNIGROUP_DOCS_URL_PROD:-https://api.unigroup.com/documents}
+      ZAMMAD_URL: ${ZAMMAD_URL:-}
+      ZAMMAD_API_TOKEN: ${ZAMMAD_API_TOKEN:-}
+      ZAMMAD_GROUP: ${ZAMMAD_GROUP:-Users}
+      ZAMMAD_CUSTOMER: ${ZAMMAD_CUSTOMER:-}
     depends_on:
       postgres: { condition: service_healthy }
       redis:    { condition: service_healthy }
