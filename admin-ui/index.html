@@ -18,6 +18,30 @@
     .status-down { background: #dc2626; }
     .status-unknown { background: #9ca3af; }
     kbd { background: #f3f4f6; padding: 0.1rem 0.35rem; border-radius: 0.25rem; font-size: 0.8em; font-family: ui-monospace, Menlo, Consolas, monospace; }
+
+    /* --- toasts --- */
+    #toast-stack { position: fixed; top: 1rem; right: 1rem; z-index: 100; display: flex; flex-direction: column; gap: 0.5rem; max-width: 22rem; }
+    .toast { background: white; border: 1px solid #e2e8f0; border-left-width: 4px; padding: 0.75rem 2rem 0.75rem 0.75rem; border-radius: 0.5rem; box-shadow: 0 10px 15px -3px rgba(0,0,0,0.1); position: relative; font-size: 0.875rem; animation: toast-in 0.15s ease-out; }
+    .toast-success { border-left-color: #16a34a; }
+    .toast-error   { border-left-color: #dc2626; }
+    .toast-warning { border-left-color: #ca8a04; }
+    .toast-info    { border-left-color: #2563eb; }
+    .toast-title { font-weight: 600; margin-bottom: 0.125rem; }
+    .toast-body  { color: #475569; white-space: pre-wrap; word-break: break-word; }
+    .toast-close { position: absolute; top: 0.25rem; right: 0.5rem; color: #94a3b8; cursor: pointer; background: none; border: none; font-size: 1.1rem; line-height: 1; }
+    .toast-close:hover { color: #475569; }
+    @keyframes toast-in { from { opacity: 0; transform: translateX(0.5rem); } to { opacity: 1; transform: translateX(0); } }
+
+    /* --- confirm dialog --- */
+    #confirm-backdrop { position: fixed; inset: 0; background: rgba(15, 23, 42, 0.5); z-index: 90; display: none; align-items: center; justify-content: center; padding: 1.5rem; }
+    #confirm-backdrop.open { display: flex; }
+    #confirm-dialog { background: white; border-radius: 0.5rem; box-shadow: 0 25px 50px -12px rgba(0,0,0,0.25); max-width: 28rem; width: 100%; overflow: hidden; }
+    #confirm-dialog .cd-head { padding: 1rem 1.25rem; border-bottom: 1px solid #e2e8f0; font-weight: 600; }
+    #confirm-dialog .cd-body { padding: 1rem 1.25rem; color: #475569; white-space: pre-wrap; }
+    #confirm-dialog .cd-body .cd-fields { margin-top: 0.75rem; display: grid; gap: 0.5rem; }
+    #confirm-dialog .cd-body label { font-size: 0.75rem; text-transform: uppercase; color: #64748b; letter-spacing: 0.02em; }
+    #confirm-dialog .cd-body input { width: 100%; border: 1px solid #cbd5e1; border-radius: 0.25rem; padding: 0.4rem 0.6rem; font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 0.875rem; }
+    #confirm-dialog .cd-foot { padding: 0.75rem 1.25rem; background: #f8fafc; border-top: 1px solid #e2e8f0; display: flex; justify-content: flex-end; gap: 0.5rem; }
   </style>
 </head>
 <body class="bg-slate-50 text-slate-900 antialiased">
@@ -34,6 +58,24 @@
   <div id="pending-banner" class="hidden bg-blue-50 border-b border-blue-200 text-blue-900 text-sm px-4 py-2 flex items-center justify-between">
     <span id="pending-banner-text">—</span>
     <button id="pending-apply-btn" class="bg-blue-600 hover:bg-blue-700 text-white text-xs px-3 py-1 rounded" onclick="applyPending()">Apply (restart services)</button>
+  </div>
+
+  <!-- toast stack -->
+  <div id="toast-stack" aria-live="polite"></div>
+
+  <!-- confirm/prompt dialog (replaces native confirm/prompt/alert for write paths) -->
+  <div id="confirm-backdrop" role="dialog" aria-modal="true">
+    <div id="confirm-dialog">
+      <div class="cd-head" id="cd-title">Confirm</div>
+      <div class="cd-body">
+        <div id="cd-message"></div>
+        <div id="cd-fields" class="cd-fields"></div>
+      </div>
+      <div class="cd-foot">
+        <button id="cd-cancel" class="px-3 py-2 text-sm border border-slate-300 rounded hover:bg-white">Cancel</button>
+        <button id="cd-ok" class="px-3 py-2 text-sm bg-blue-600 hover:bg-blue-700 text-white rounded">Confirm</button>
+      </div>
+    </div>
   </div>
 
   <!-- top nav -->
@@ -382,7 +424,13 @@
     async function applyPending() {
       if (!pendingServices.length) return;
       const services = pendingServices.map(p => p.service);
-      if (!confirm(`Restart ${services.join(', ')} to apply ${pendingServices.reduce((a,p)=>a+p.change_count,0)} pending change(s)?\n\nIn-flight requests to these services will drop briefly.`)) return;
+      const totalChanges = pendingServices.reduce((a,p)=>a+p.change_count,0);
+      const ok = await confirmDialog({
+        title: `Restart ${services.join(', ')}?`,
+        message: `Applies ${totalChanges} pending change${totalChanges===1?'':'s'}. In-flight requests to these services will drop briefly.`,
+        ok: 'Restart', danger: true
+      });
+      if (!ok) return;
       const btn = document.getElementById('pending-apply-btn');
       btn.disabled = true; btn.textContent = 'Restarting…';
       try {
@@ -393,15 +441,16 @@
         });
         const body = await r.json().catch(() => ({}));
         if (!r.ok) throw new Error(body.detail || r.statusText);
-        const ok = (body.results || []).filter(x => x.status === 'restarted').map(x => x.container);
-        const bad = (body.results || []).filter(x => x.status !== 'restarted');
-        let msg = `Restarted: ${ok.join(', ') || '(none)'}`;
-        if (bad.length) msg += `\n\nErrors:\n` + bad.map(x => `  ${x.service}: ${x.status} ${x.error || ''}`).join('\n');
-        alert(msg);
+        const successful = (body.results || []).filter(x => x.status === 'restarted').map(x => x.container);
+        const failed    = (body.results || []).filter(x => x.status !== 'restarted');
+        if (successful.length) toastOk('Restarted', successful.join(', '));
+        if (failed.length) {
+          toastErr('Restart had errors', failed.map(x => `${x.service}: ${x.status} ${x.error || ''}`).join('\n'));
+        }
         await refreshPending();
         await refreshAudit();
       } catch (e) {
-        alert('Restart failed: ' + e.message);
+        toastErr('Restart failed', String(e.message || e));
       } finally {
         btn.disabled = false; btn.textContent = 'Apply (restart services)';
       }
@@ -502,6 +551,7 @@
           throw new Error(b.detail || r.statusText);
         }
         closeCredModal();
+        toastOk(`Saved ${name}`, source === 'env' ? 'Restart queued' : '');
         await refreshCreds();
         await refreshAudit();
         await refreshPending();
@@ -516,52 +566,69 @@
 
     async function rotateCred(name) {
       if (!live || !sourcesState.env || !sourcesState.env.writable) {
-        alert('Backend not reachable or env source not writable.'); return;
+        toastErr('Backend not reachable', 'Env source is not writable. Start the admin-ui container: docker compose --profile admin up -d admin-ui');
+        return;
       }
-      const value = prompt(`Rotate ${name}\n\nEnter the NEW value. The backend will run the integration's health probe with the new value; if the probe fails, the old value is automatically restored.`);
-      if (!value) return;
-      const note = prompt('Audit note (optional):', 'quarterly rotation');
+      const inputs = await confirmDialog({
+        title: `Rotate ${name}`,
+        message: `The backend will write the new value, run the integration's health probe with it, and restore the old value if the probe fails.`,
+        fields: [
+          { name: 'value', label: 'New value', type: 'password', placeholder: 'new secret' },
+          { name: 'note',  label: 'Audit note (optional)', type: 'text', value: 'quarterly rotation' }
+        ],
+        ok: 'Rotate'
+      });
+      if (!inputs || !inputs.value) return;
       try {
         const r = await fetch(`/api/credentials/env/${encodeURIComponent(name)}/rotate`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ value, note })
+          body: JSON.stringify({ value: inputs.value, note: inputs.note || null })
         });
         const body = await r.json().catch(() => ({detail: r.statusText}));
         if (!r.ok) {
           const probeDetail = body?.detail?.probe?.detail || body.detail || r.statusText;
-          alert(`Rotate rejected (old value restored):\n\n${probeDetail}`);
+          toastErr(`Rotate rejected — old value restored`, `${name}\n${probeDetail}`);
         } else {
           const p = body.probe || {};
-          alert(`Rotated ${name}.\nProbe: ${p.detail || 'ok'} (${p.latency_ms||0}ms)\n\nRestart queued for services that consume this var.`);
+          toastOk(`Rotated ${name}`, `Probe ${p.ok ? 'ok' : 'skipped'} (${p.latency_ms||0}ms). Restart queued.`);
         }
         await refreshCreds();
         await refreshAudit();
         await refreshPending();
         renderCreds('all');
       } catch (e) {
-        alert('Rotate failed: ' + e.message);
+        toastErr('Rotate failed', String(e.message || e));
       }
     }
 
     async function deleteCred(name, source) {
       source = source || 'env';
       if (!live || !sourcesState[source] || !sourcesState[source].writable) {
-        alert(`${source} source not writable (wireframe or not-yet-implemented). Nothing will happen.`); return;
+        toastWarn(`${source} source not writable`, 'Wireframe mode or backend not reachable — nothing happened.');
+        return;
       }
       const msg = source === 'env'
-        ? `Clear ${name}? It will be set to empty in .env and the gateway will fall back to whatever default the compose file defines (often unsafe).\n\nLogged in the audit trail.`
-        : `Remove the Kong key for ${name}? That consumer will 401 on every request until a new key is set.\n\nLogged in the audit trail.`;
-      if (!confirm(msg)) return;
+        ? `Clears ${name} in .env. The gateway will fall back to whatever default the compose file defines (often unsafe until replaced).`
+        : source === 'kong'
+          ? `Removes the Kong key for ${name}. That consumer will 401 on every request until a new key is set.`
+          : `Deletes the n8n credential record ${name}.`;
+      const ok = await confirmDialog({
+        title: `Delete ${name}?`,
+        message: `${msg}\n\nLogged in the audit trail.`,
+        ok: 'Delete', danger: true
+      });
+      if (!ok) return;
       try {
         const r = await fetch(`/api/credentials/${source}/${encodeURIComponent(name)}`, { method: 'DELETE' });
         if (!r.ok) throw new Error((await r.json().catch(()=>({}))).detail || r.statusText);
+        toastOk(`Deleted ${name}`);
         await refreshCreds();
         await refreshAudit();
         await refreshPending();
         renderCreds('all');
       } catch (e) {
-        alert('Delete failed: ' + e.message);
+        toastErr('Delete failed', String(e.message || e));
       }
     }
     const integrationDetails = {
@@ -593,6 +660,77 @@
       wms:      { title:'WMS',      status:'unknown', summary:'Route exists in kong.yml. No workflow wired yet.', events:[] },
       dispatch: { title:'Dispatch', status:'unknown', summary:'Not scaffolded yet.', events:[] }
     };
+
+    // --- toasts -------------------------------------------------------
+    function showToast({ title, body = '', type = 'info', sticky = false, timeoutMs = 5000 }) {
+      const stack = document.getElementById('toast-stack');
+      const el = document.createElement('div');
+      el.className = `toast toast-${type}`;
+      el.innerHTML = `
+        <button class="toast-close" aria-label="dismiss">&times;</button>
+        ${title ? `<div class="toast-title"></div>` : ''}
+        ${body  ? `<div class="toast-body"></div>` : ''}`;
+      if (title) el.querySelector('.toast-title').textContent = title;
+      if (body)  el.querySelector('.toast-body').textContent  = body;
+      el.querySelector('.toast-close').addEventListener('click', () => el.remove());
+      stack.appendChild(el);
+      if (!sticky) setTimeout(() => el.remove(), timeoutMs);
+      return el;
+    }
+    // Shortcuts
+    const toastOk   = (title, body)    => showToast({ title, body, type: 'success' });
+    const toastErr  = (title, body)    => showToast({ title, body, type: 'error',   sticky: true });
+    const toastWarn = (title, body)    => showToast({ title, body, type: 'warning', timeoutMs: 8000 });
+    const toastInfo = (title, body)    => showToast({ title, body, type: 'info' });
+
+    // --- confirm/prompt dialog ----------------------------------------
+    // Returns a promise:
+    //   confirmDialog({title, message, ok, cancel, fields}) -> values | null
+    // If `fields` is passed, resolves to {field.name: string, ...}; otherwise to true.
+    function confirmDialog(opts) {
+      const { title = 'Confirm', message = '', ok = 'Confirm', cancel = 'Cancel', fields = [], danger = false } = opts;
+      return new Promise(resolve => {
+        const backdrop = document.getElementById('confirm-backdrop');
+        document.getElementById('cd-title').textContent = title;
+        document.getElementById('cd-message').textContent = message;
+        const fieldsBox = document.getElementById('cd-fields');
+        fieldsBox.innerHTML = fields.map(f => `
+          <div>
+            <label>${f.label || f.name}</label>
+            <input name="${f.name}" type="${f.type || 'text'}" value="${f.value || ''}"
+                   placeholder="${f.placeholder || ''}" />
+          </div>`).join('');
+        const okBtn = document.getElementById('cd-ok');
+        const cancelBtn = document.getElementById('cd-cancel');
+        okBtn.textContent = ok;
+        cancelBtn.textContent = cancel;
+        okBtn.className = danger
+          ? 'px-3 py-2 text-sm bg-red-600 hover:bg-red-700 text-white rounded'
+          : 'px-3 py-2 text-sm bg-blue-600 hover:bg-blue-700 text-white rounded';
+        backdrop.classList.add('open');
+        const firstInput = fieldsBox.querySelector('input');
+        if (firstInput) setTimeout(() => firstInput.focus(), 0);
+        const cleanup = () => {
+          backdrop.classList.remove('open');
+          okBtn.onclick = cancelBtn.onclick = null;
+          backdrop.onclick = null;
+          document.onkeydown = null;
+        };
+        okBtn.onclick = () => {
+          const result = fields.length
+            ? Object.fromEntries(fields.map(f => [f.name, fieldsBox.querySelector(`[name="${f.name}"]`).value]))
+            : true;
+          cleanup();
+          resolve(result);
+        };
+        cancelBtn.onclick = () => { cleanup(); resolve(null); };
+        backdrop.onclick  = (e) => { if (e.target === backdrop) { cleanup(); resolve(null); } };
+        document.onkeydown = (e) => {
+          if (e.key === 'Escape')  { cleanup(); resolve(null); }
+          if (e.key === 'Enter' && fields.length) okBtn.click();
+        };
+      });
+    }
 
     // --- routing ------------------------------------------------------
     function show(viewId, detailKey) {
