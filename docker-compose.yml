@@ -272,9 +272,9 @@ services:
       - "127.0.0.1:8001:8001"
       - "127.0.0.1:8002:8002"
     healthcheck:
-      # Prove admin API responds (declarative config loaded + nginx up),
-      # not just that the kong process exists.
-      test: ["CMD-SHELL", "kong health && curl -fsS http://127.0.0.1:8001/status >/dev/null"]
+      # The Kong image doesn't ship curl/wget, so we use `kong health` which
+      # runs an internal check against the admin API + worker processes.
+      test: ["CMD", "kong", "health"]
       interval: 10s
       timeout: 5s
       retries: 10

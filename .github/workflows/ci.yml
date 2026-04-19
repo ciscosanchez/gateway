@@ -172,14 +172,12 @@ jobs:
         run: |
           echo "=== ps ==="
           docker compose -f docker-compose.yml -f docker-compose.lite.yml ps -a || true
-          echo "=== redpanda-0 ==="
-          docker logs gateway-redpanda-0 2>&1 | tail -60 || true
-          echo "=== n8n ==="
-          docker logs gateway-n8n 2>&1 | tail -120 || true
-          echo "=== kong ==="
-          docker logs gateway-kong 2>&1 | tail -60 || true
-          echo "=== postgres ==="
-          docker logs gateway-postgres 2>&1 | tail -20 || true
+          for c in gateway-redpanda-0 gateway-n8n gateway-kong gateway-postgres \
+                   gateway-alertmanager gateway-prometheus gateway-grafana \
+                   gateway-redis; do
+            echo "=== ${c} ==="
+            docker logs "${c}" 2>&1 | tail -80 || true
+          done
       - name: Services status
         run: docker compose -f docker-compose.yml -f docker-compose.lite.yml ps
       - name: Kong admin health

@@ -3,7 +3,7 @@ global:
   # $ALERTMANAGER_SLACK_WEBHOOK is substituted at container start by
   # entrypoint.sh. If unset, this field is empty and the slack receiver is
   # effectively a no-op (send will fail, alerts still fire to PagerDuty/default).
-  slack_api_url: "${ALERTMANAGER_SLACK_WEBHOOK}"
+  slack_api_url: "%%ALERTMANAGER_SLACK_WEBHOOK%%"
 
 route:
   receiver: default
@@ -36,7 +36,7 @@ receivers:
 
   - name: pagerduty
     pagerduty_configs:
-      - routing_key: "${ALERTMANAGER_PAGERDUTY_KEY}"
+      - routing_key: "%%ALERTMANAGER_PAGERDUTY_KEY%%"
         send_resolved: true
         description: "{{ .CommonAnnotations.summary }}"
 
