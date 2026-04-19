@@ -1,0 +1,465 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Gateway Admin — Wireframe</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    [x-cloak] { display: none !important; }
+    .view { display: none; }
+    .view.active { display: block; }
+    .tab-btn[aria-selected="true"] {
+      border-bottom-color: #2563eb; color: #1d4ed8; font-weight: 600;
+    }
+    .status-dot { width: 0.6rem; height: 0.6rem; border-radius: 9999px; display: inline-block; }
+    .status-healthy { background: #16a34a; }
+    .status-degraded { background: #ca8a04; }
+    .status-down { background: #dc2626; }
+    .status-unknown { background: #9ca3af; }
+    kbd { background: #f3f4f6; padding: 0.1rem 0.35rem; border-radius: 0.25rem; font-size: 0.8em; font-family: ui-monospace, Menlo, Consolas, monospace; }
+  </style>
+</head>
+<body class="bg-slate-50 text-slate-900 antialiased">
+
+  <!-- banner: this is a wireframe, not wired to anything -->
+  <div class="bg-amber-100 border-b border-amber-300 text-amber-900 text-sm px-4 py-2 text-center">
+    <strong>Wireframe only.</strong> Data below is mocked. No backend is wired — click around to feel the shape.
+    See <a class="underline font-semibold" href="./README.md">admin-ui/README.md</a> for what a real build would need.
+  </div>
+
+  <!-- top nav -->
+  <header class="bg-white border-b border-slate-200">
+    <div class="max-w-7xl mx-auto px-6 h-14 flex items-center justify-between">
+      <div class="flex items-center gap-3">
+        <div class="h-8 w-8 rounded bg-blue-600 text-white grid place-items-center font-bold">G</div>
+        <div>
+          <div class="font-semibold tracking-tight">Gateway Admin</div>
+          <div class="text-xs text-slate-500">stg • connected to 127.0.0.1</div>
+        </div>
+      </div>
+      <nav class="flex items-center gap-1">
+        <a href="#dashboard"    class="nav-link px-3 py-1.5 rounded hover:bg-slate-100 text-sm">Dashboard</a>
+        <a href="#credentials"  class="nav-link px-3 py-1.5 rounded hover:bg-slate-100 text-sm">Credentials</a>
+        <a href="#integrations" class="nav-link px-3 py-1.5 rounded hover:bg-slate-100 text-sm">Integrations</a>
+        <a href="#audit"        class="nav-link px-3 py-1.5 rounded hover:bg-slate-100 text-sm">Audit log</a>
+      </nav>
+      <div class="flex items-center gap-3">
+        <span class="text-xs text-slate-500">signed in as <strong>admin</strong></span>
+        <button class="text-sm text-slate-500 hover:text-slate-900">Sign out</button>
+      </div>
+    </div>
+  </header>
+
+  <main class="max-w-7xl mx-auto px-6 py-6">
+
+    <!-- ==================================================== -->
+    <!-- Dashboard                                             -->
+    <!-- ==================================================== -->
+    <section id="view-dashboard" class="view active">
+      <h1 class="text-2xl font-semibold tracking-tight mb-1">Dashboard</h1>
+      <p class="text-slate-500 mb-6">Live picture of every integration wired into the gateway.</p>
+
+      <!-- stat cards -->
+      <div class="grid grid-cols-4 gap-4 mb-8">
+        <div class="bg-white border border-slate-200 rounded-lg p-4">
+          <div class="text-xs text-slate-500 uppercase tracking-wide">Integrations</div>
+          <div class="text-3xl font-semibold mt-1">5</div>
+          <div class="text-xs text-slate-500 mt-1">3 live · 2 scaffolded</div>
+        </div>
+        <div class="bg-white border border-slate-200 rounded-lg p-4">
+          <div class="text-xs text-slate-500 uppercase tracking-wide">Credentials</div>
+          <div class="text-3xl font-semibold mt-1">11</div>
+          <div class="text-xs text-slate-500 mt-1">3 sources · 2 expire this month</div>
+        </div>
+        <div class="bg-white border border-slate-200 rounded-lg p-4">
+          <div class="text-xs text-slate-500 uppercase tracking-wide">Events / 24h</div>
+          <div class="text-3xl font-semibold mt-1">4,127</div>
+          <div class="text-xs text-emerald-600 mt-1">↑ 12% vs. yesterday</div>
+        </div>
+        <div class="bg-white border border-slate-200 rounded-lg p-4">
+          <div class="text-xs text-slate-500 uppercase tracking-wide">Errors / 24h</div>
+          <div class="text-3xl font-semibold mt-1">3</div>
+          <div class="text-xs text-amber-600 mt-1">all in errors-dlq</div>
+        </div>
+      </div>
+
+      <!-- integration cards -->
+      <h2 class="text-sm font-semibold uppercase tracking-wide text-slate-500 mb-2">Integrations</h2>
+      <div class="grid grid-cols-3 gap-4">
+        <div class="bg-white border border-slate-200 rounded-lg p-4 hover:border-blue-400 cursor-pointer" onclick="goto('integrations','samsara')">
+          <div class="flex items-center justify-between">
+            <div class="font-semibold">Samsara</div>
+            <span class="status-dot status-healthy" title="healthy"></span>
+          </div>
+          <div class="text-xs text-slate-500 mt-1">Inbound webhook · HMAC</div>
+          <div class="text-xs text-slate-700 mt-3">Last event <strong>2m ago</strong></div>
+        </div>
+        <div class="bg-white border border-slate-200 rounded-lg p-4 hover:border-blue-400 cursor-pointer" onclick="goto('integrations','netsuite')">
+          <div class="flex items-center justify-between">
+            <div class="font-semibold">NetSuite</div>
+            <span class="status-dot status-degraded" title="degraded"></span>
+          </div>
+          <div class="text-xs text-slate-500 mt-1">OAuth1 TBA · bidirectional</div>
+          <div class="text-xs text-slate-700 mt-3">Creds <strong>missing</strong></div>
+        </div>
+        <div class="bg-white border border-slate-200 rounded-lg p-4 hover:border-blue-400 cursor-pointer" onclick="goto('integrations','unigroup')">
+          <div class="flex items-center justify-between">
+            <div class="font-semibold">Unigroup Converge</div>
+            <span class="status-dot status-degraded" title="degraded"></span>
+          </div>
+          <div class="text-xs text-slate-500 mt-1">OAuth2 + GraphQL · outbound</div>
+          <div class="text-xs text-slate-700 mt-3">Creds <strong>missing</strong></div>
+        </div>
+        <div class="bg-white border border-slate-200 rounded-lg p-4 hover:border-blue-400 cursor-pointer" onclick="goto('integrations','wms')">
+          <div class="flex items-center justify-between">
+            <div class="font-semibold">WMS</div>
+            <span class="status-dot status-unknown" title="not configured"></span>
+          </div>
+          <div class="text-xs text-slate-500 mt-1">REST · outbound (stub)</div>
+          <div class="text-xs text-slate-700 mt-3">Not yet wired</div>
+        </div>
+        <div class="bg-white border border-slate-200 rounded-lg p-4 hover:border-blue-400 cursor-pointer" onclick="goto('integrations','dispatch')">
+          <div class="flex items-center justify-between">
+            <div class="font-semibold">Dispatch</div>
+            <span class="status-dot status-unknown" title="not configured"></span>
+          </div>
+          <div class="text-xs text-slate-500 mt-1">—</div>
+          <div class="text-xs text-slate-700 mt-3">Not yet wired</div>
+        </div>
+        <div class="bg-white border border-dashed border-slate-300 rounded-lg p-4 text-center grid place-items-center text-slate-500 hover:border-blue-400 cursor-pointer" onclick="goto('integrations','new')">
+          <div>
+            <div class="text-2xl">＋</div>
+            <div class="text-sm mt-1">Add integration</div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ==================================================== -->
+    <!-- Credentials                                           -->
+    <!-- ==================================================== -->
+    <section id="view-credentials" class="view">
+      <div class="flex items-start justify-between mb-6">
+        <div>
+          <h1 class="text-2xl font-semibold tracking-tight">Credentials</h1>
+          <p class="text-slate-500">Every secret used by the gateway, grouped by where it's stored.</p>
+        </div>
+        <button class="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded text-sm" onclick="openCredModal()">
+          + Add credential
+        </button>
+      </div>
+
+      <!-- tabs -->
+      <div class="border-b border-slate-200 mb-4">
+        <div class="flex gap-6" role="tablist">
+          <button class="tab-btn border-b-2 border-transparent pb-2 px-1 text-sm" aria-selected="true" data-tab="all">All (11)</button>
+          <button class="tab-btn border-b-2 border-transparent pb-2 px-1 text-sm" data-tab="env">Env vars (7)</button>
+          <button class="tab-btn border-b-2 border-transparent pb-2 px-1 text-sm" data-tab="n8n">n8n credentials (2)</button>
+          <button class="tab-btn border-b-2 border-transparent pb-2 px-1 text-sm" data-tab="kong">Kong consumers (4)</button>
+        </div>
+      </div>
+
+      <!-- table -->
+      <div class="bg-white border border-slate-200 rounded-lg overflow-hidden">
+        <table class="w-full text-sm">
+          <thead class="bg-slate-50 text-xs uppercase tracking-wide text-slate-500">
+            <tr>
+              <th class="text-left px-4 py-2">Name</th>
+              <th class="text-left px-4 py-2">Integration</th>
+              <th class="text-left px-4 py-2">Source</th>
+              <th class="text-left px-4 py-2">Value</th>
+              <th class="text-left px-4 py-2">Last rotated</th>
+              <th class="text-left px-4 py-2">Status</th>
+              <th class="text-right px-4 py-2"></th>
+            </tr>
+          </thead>
+          <tbody id="cred-rows"></tbody>
+        </table>
+      </div>
+
+      <p class="text-xs text-slate-500 mt-3">
+        <strong>Env vars</strong> live in <kbd>.env</kbd> and require an n8n restart to rotate.
+        <strong>n8n credentials</strong> are the per-node records (OAuth1, OAuth2, HTTP Basic, etc.) used inside workflows.
+        <strong>Kong consumers</strong> are the <kbd>X-API-Key</kbd> values external callers present to reach us.
+      </p>
+    </section>
+
+    <!-- ==================================================== -->
+    <!-- Integrations                                          -->
+    <!-- ==================================================== -->
+    <section id="view-integrations" class="view">
+      <h1 class="text-2xl font-semibold tracking-tight mb-1">Integrations</h1>
+      <p class="text-slate-500 mb-6">Per-integration health, associated credentials, and wire-level activity.</p>
+
+      <div id="integration-detail" class="grid grid-cols-3 gap-6">
+        <!-- rendered by js -->
+      </div>
+    </section>
+
+    <!-- ==================================================== -->
+    <!-- Audit log (sketch)                                    -->
+    <!-- ==================================================== -->
+    <section id="view-audit" class="view">
+      <h1 class="text-2xl font-semibold tracking-tight mb-1">Audit log</h1>
+      <p class="text-slate-500 mb-6">Who changed what, when. Immutable and queryable.</p>
+      <div class="bg-white border border-slate-200 rounded-lg divide-y divide-slate-200">
+        <div class="p-4 flex items-start gap-3">
+          <span class="text-xs text-slate-500 w-36 flex-shrink-0">2026-04-19 15:22</span>
+          <div>
+            <div><strong>admin</strong> rotated env var <kbd>SAMSARA_API_TOKEN</kbd></div>
+            <div class="text-xs text-slate-500">n8n + n8n-worker restarted automatically</div>
+          </div>
+        </div>
+        <div class="p-4 flex items-start gap-3">
+          <span class="text-xs text-slate-500 w-36 flex-shrink-0">2026-04-18 09:03</span>
+          <div>
+            <div><strong>admin</strong> created Kong consumer <kbd>samsara-client</kbd></div>
+          </div>
+        </div>
+        <div class="p-4 flex items-start gap-3">
+          <span class="text-xs text-slate-500 w-36 flex-shrink-0">2026-04-17 16:45</span>
+          <div>
+            <div><strong>admin</strong> imported n8n credential <kbd>NetSuite TBA</kbd></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+  </main>
+
+  <!-- ==================================================== -->
+  <!-- Add/edit credential modal                             -->
+  <!-- ==================================================== -->
+  <div id="cred-modal" class="fixed inset-0 bg-slate-900/50 z-50 hidden items-center justify-center p-6">
+    <div class="bg-white rounded-lg shadow-xl w-full max-w-lg">
+      <div class="px-6 py-4 border-b border-slate-200 flex items-center justify-between">
+        <h3 id="cred-modal-title" class="font-semibold">Add credential</h3>
+        <button class="text-slate-400 hover:text-slate-700" onclick="closeCredModal()">&times;</button>
+      </div>
+      <div class="px-6 py-4 space-y-4">
+
+        <div>
+          <label class="text-xs text-slate-500 uppercase tracking-wide">Where does this live?</label>
+          <div class="grid grid-cols-3 gap-2 mt-1">
+            <label class="border border-slate-300 rounded p-2 text-sm cursor-pointer hover:border-blue-400 has-[:checked]:border-blue-600 has-[:checked]:bg-blue-50">
+              <input type="radio" name="cred-source" value="env" class="mr-1" checked /> Env var
+              <div class="text-xs text-slate-500 mt-1">.env, requires restart</div>
+            </label>
+            <label class="border border-slate-300 rounded p-2 text-sm cursor-pointer hover:border-blue-400 has-[:checked]:border-blue-600 has-[:checked]:bg-blue-50">
+              <input type="radio" name="cred-source" value="n8n" class="mr-1" /> n8n cred
+              <div class="text-xs text-slate-500 mt-1">per-node, hot-swap</div>
+            </label>
+            <label class="border border-slate-300 rounded p-2 text-sm cursor-pointer hover:border-blue-400 has-[:checked]:border-blue-600 has-[:checked]:bg-blue-50">
+              <input type="radio" name="cred-source" value="kong" class="mr-1" /> Kong consumer
+              <div class="text-xs text-slate-500 mt-1">X-API-Key for callers</div>
+            </label>
+          </div>
+        </div>
+
+        <div>
+          <label class="text-xs text-slate-500 uppercase tracking-wide">Name / env var</label>
+          <input type="text" class="mt-1 w-full border border-slate-300 rounded px-3 py-2 text-sm font-mono" placeholder="SAMSARA_API_TOKEN" />
+          <div class="text-xs text-slate-500 mt-1">Conventionally UPPER_SNAKE_CASE for env vars.</div>
+        </div>
+
+        <div>
+          <label class="text-xs text-slate-500 uppercase tracking-wide">Integration</label>
+          <select class="mt-1 w-full border border-slate-300 rounded px-3 py-2 text-sm">
+            <option>Samsara</option><option>NetSuite</option><option>Unigroup</option>
+            <option>WMS</option><option>Dispatch</option><option>(unassigned)</option>
+          </select>
+        </div>
+
+        <div>
+          <label class="text-xs text-slate-500 uppercase tracking-wide">Value</label>
+          <input type="password" class="mt-1 w-full border border-slate-300 rounded px-3 py-2 text-sm font-mono" placeholder="paste secret" />
+          <div class="text-xs text-slate-500 mt-1">Stored encrypted. Never echoed back in plaintext after save.</div>
+        </div>
+
+        <div>
+          <label class="text-xs text-slate-500 uppercase tracking-wide">Expires</label>
+          <input type="date" class="mt-1 w-full border border-slate-300 rounded px-3 py-2 text-sm" />
+          <div class="text-xs text-slate-500 mt-1">Optional. If set, we'll remind you at 30/7/1 days.</div>
+        </div>
+
+      </div>
+      <div class="px-6 py-4 bg-slate-50 border-t border-slate-200 flex items-center justify-between">
+        <div class="text-xs text-slate-500">Changes are logged to the <a href="#audit" class="underline">audit log</a>.</div>
+        <div class="flex gap-2">
+          <button class="px-3 py-2 text-sm border border-slate-300 rounded hover:bg-white" onclick="closeCredModal()">Cancel</button>
+          <button class="px-3 py-2 text-sm bg-blue-600 hover:bg-blue-700 text-white rounded" onclick="alert('wireframe: would save + restart affected services')">Save</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    // --- mock data ----------------------------------------------------
+    const creds = [
+      { name:'SAMSARA_API_TOKEN',       integration:'Samsara',  source:'env',  value:'samsara_api_•••••••x9', rotated:'2026-04-01', status:'ok' },
+      { name:'SAMSARA_WEBHOOK_SECRET',  integration:'Samsara',  source:'env',  value:'•••••••••••••••••a3', rotated:'2026-04-01', status:'ok' },
+      { name:'NETSUITE_ACCOUNT_ID',     integration:'NetSuite', source:'env',  value:'1234567',             rotated:'—',         status:'ok' },
+      { name:'NETSUITE_CONSUMER_KEY',   integration:'NetSuite', source:'env',  value:'(unset)',             rotated:'—',         status:'missing' },
+      { name:'NETSUITE_CONSUMER_SECRET',integration:'NetSuite', source:'env',  value:'(unset)',             rotated:'—',         status:'missing' },
+      { name:'UNIGROUP_CLIENT_ID',      integration:'Unigroup', source:'env',  value:'(unset)',             rotated:'—',         status:'missing' },
+      { name:'UNIGROUP_CLIENT_SECRET',  integration:'Unigroup', source:'env',  value:'(unset)',             rotated:'—',         status:'missing' },
+      { name:'NetSuite TBA',            integration:'NetSuite', source:'n8n',  value:'OAuth1 (5 fields)',   rotated:'—',         status:'missing' },
+      { name:'Redpanda (internal)',     integration:'—',        source:'n8n',  value:'kafka SASL/PLAIN',    rotated:'2026-03-12',status:'ok' },
+      { name:'samsara-client',          integration:'Samsara',  source:'kong', value:'X-API-Key ••••••9f',  rotated:'2026-04-02',status:'ok' },
+      { name:'netsuite-client',         integration:'NetSuite', source:'kong', value:'X-API-Key ••••••3c',  rotated:'2026-04-02',status:'ok' },
+      { name:'wms-client',              integration:'WMS',      source:'kong', value:'X-API-Key ••••••7e',  rotated:'2026-04-02',status:'ok' },
+      { name:'unigroup-client',         integration:'Unigroup', source:'kong', value:'X-API-Key ••••••2b',  rotated:'2026-04-02',status:'ok' }
+    ];
+    const integrationDetails = {
+      samsara: {
+        title:'Samsara', status:'healthy',
+        summary:'Inbound webhook flow. HMAC-SHA256 signature verified at Kong before n8n sees the payload.',
+        events: [
+          '15:02  GeofenceEntry  vehicle_281…656  Warehouse A',
+          '15:00  Trip           vehicle_281…657  —',
+          '14:58  GeofenceExit   vehicle_281…656  Warehouse A'
+        ]
+      },
+      netsuite: {
+        title:'NetSuite', status:'degraded',
+        summary:'Outbound workflow complete (netsuite-create-sales-order.json). Blocked on OAuth1 TBA credentials.',
+        events: [
+          'Waiting on NETSUITE_CONSUMER_KEY / _SECRET / TOKEN_ID / TOKEN_SECRET in .env',
+          'Inbound webhook path /netsuite is wired (netsuite-webhook-to-kafka.json)'
+        ]
+      },
+      unigroup: {
+        title:'Unigroup Converge', status:'degraded',
+        summary:'OAuth2 client_credentials + GraphQL. Outbound workflow scaffolded. Blocked on Keycloak client credentials from Unigroup.',
+        events: [
+          'Waiting on UNIGROUP_CLIENT_ID / UNIGROUP_CLIENT_SECRET in .env',
+          'Also need: scope value + confirmation whether Converge pushes webhooks or we poll'
+        ]
+      },
+      wms:      { title:'WMS',      status:'unknown', summary:'Route exists in kong.yml. No workflow wired yet.', events:[] },
+      dispatch: { title:'Dispatch', status:'unknown', summary:'Not scaffolded yet.', events:[] }
+    };
+
+    // --- routing ------------------------------------------------------
+    function show(viewId, detailKey) {
+      document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
+      const el = document.getElementById('view-' + viewId);
+      if (el) el.classList.add('active');
+      if (viewId === 'credentials') renderCreds('all');
+      if (viewId === 'integrations') renderIntegration(detailKey || 'samsara');
+    }
+    function goto(viewId, detailKey) {
+      window.location.hash = viewId + (detailKey ? '/' + detailKey : '');
+    }
+    function onHash() {
+      const [view, detail] = (window.location.hash.slice(1) || 'dashboard').split('/');
+      show(view || 'dashboard', detail);
+    }
+    window.addEventListener('hashchange', onHash);
+
+    // --- credentials table --------------------------------------------
+    function renderCreds(filter) {
+      const rows = creds
+        .filter(c => filter === 'all' || c.source === filter)
+        .map(c => {
+          const srcBadge = {
+            env:  'bg-slate-100 text-slate-700',
+            n8n:  'bg-violet-100 text-violet-700',
+            kong: 'bg-blue-100 text-blue-700'
+          }[c.source];
+          const status = c.status === 'ok'
+            ? '<span class="text-xs text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded">ok</span>'
+            : '<span class="text-xs text-amber-700 bg-amber-50 px-2 py-0.5 rounded">missing</span>';
+          return `
+            <tr class="border-t border-slate-200 hover:bg-slate-50">
+              <td class="px-4 py-2 font-mono text-xs">${c.name}</td>
+              <td class="px-4 py-2">${c.integration}</td>
+              <td class="px-4 py-2"><span class="text-xs px-2 py-0.5 rounded ${srcBadge}">${c.source}</span></td>
+              <td class="px-4 py-2 font-mono text-xs text-slate-600">${c.value}</td>
+              <td class="px-4 py-2 text-slate-600">${c.rotated}</td>
+              <td class="px-4 py-2">${status}</td>
+              <td class="px-4 py-2 text-right">
+                <button class="text-xs text-slate-600 hover:text-blue-600" onclick="openCredModal('${c.name}')">Edit</button>
+                <button class="text-xs text-slate-600 hover:text-blue-600 ml-2">Rotate</button>
+                <button class="text-xs text-slate-600 hover:text-red-600 ml-2" onclick="confirmDelete('${c.name}')">Delete</button>
+              </td>
+            </tr>
+          `;
+        }).join('');
+      document.getElementById('cred-rows').innerHTML = rows || '<tr><td colspan=7 class="px-4 py-6 text-center text-slate-500">No credentials in this group.</td></tr>';
+      // tabs
+      document.querySelectorAll('.tab-btn').forEach(b => b.setAttribute('aria-selected', b.dataset.tab === filter ? 'true' : 'false'));
+    }
+    document.addEventListener('click', (e) => {
+      const t = e.target.closest('.tab-btn');
+      if (t) renderCreds(t.dataset.tab);
+    });
+
+    // --- integrations view --------------------------------------------
+    function renderIntegration(key) {
+      const d = integrationDetails[key] || integrationDetails.samsara;
+      const related = creds.filter(c => c.integration === d.title);
+      const statusClass = { healthy:'status-healthy', degraded:'status-degraded', down:'status-down', unknown:'status-unknown' }[d.status];
+      const events = d.events.length
+        ? `<ul class="space-y-1 font-mono text-xs text-slate-700">${d.events.map(e => `<li>${e}</li>`).join('')}</ul>`
+        : '<div class="text-xs text-slate-400 italic">No recent activity.</div>';
+      const relatedRows = related.map(c => `
+        <div class="flex items-center justify-between py-1.5 text-sm">
+          <span class="font-mono text-xs">${c.name}</span>
+          <span class="text-xs text-slate-500">${c.source}</span>
+        </div>`).join('') || '<div class="text-xs text-slate-400 italic">No credentials linked.</div>';
+      document.getElementById('integration-detail').innerHTML = `
+        <aside class="col-span-1">
+          <div class="text-xs text-slate-500 uppercase tracking-wide mb-2">Integrations</div>
+          <nav class="bg-white border border-slate-200 rounded-lg overflow-hidden">
+            ${Object.entries(integrationDetails).map(([k,v]) => `
+              <a href="#integrations/${k}" class="block px-3 py-2 text-sm border-b border-slate-100 last:border-b-0 ${k===key ? 'bg-blue-50 text-blue-800 font-semibold' : 'hover:bg-slate-50'}">
+                <span class="status-dot ${{'healthy':'status-healthy','degraded':'status-degraded','down':'status-down','unknown':'status-unknown'}[v.status]}"></span>
+                ${v.title}
+              </a>
+            `).join('')}
+          </nav>
+        </aside>
+        <section class="col-span-2 space-y-4">
+          <div class="bg-white border border-slate-200 rounded-lg p-5">
+            <div class="flex items-center gap-2 mb-2">
+              <span class="status-dot ${statusClass}"></span>
+              <h2 class="text-lg font-semibold">${d.title}</h2>
+              <span class="ml-auto text-xs text-slate-500 uppercase">${d.status}</span>
+            </div>
+            <p class="text-sm text-slate-600">${d.summary}</p>
+          </div>
+          <div class="bg-white border border-slate-200 rounded-lg p-5">
+            <h3 class="text-sm font-semibold uppercase tracking-wide text-slate-500 mb-2">Credentials</h3>
+            <div class="divide-y divide-slate-100">${relatedRows}</div>
+          </div>
+          <div class="bg-white border border-slate-200 rounded-lg p-5">
+            <h3 class="text-sm font-semibold uppercase tracking-wide text-slate-500 mb-2">Recent activity</h3>
+            ${events}
+          </div>
+        </section>
+      `;
+    }
+
+    // --- modal + misc --------------------------------------------------
+    function openCredModal(name) {
+      document.getElementById('cred-modal-title').textContent = name ? `Edit ${name}` : 'Add credential';
+      document.getElementById('cred-modal').classList.remove('hidden');
+      document.getElementById('cred-modal').classList.add('flex');
+    }
+    function closeCredModal() {
+      document.getElementById('cred-modal').classList.add('hidden');
+      document.getElementById('cred-modal').classList.remove('flex');
+    }
+    function confirmDelete(name) {
+      if (confirm(`Delete ${name}? This is logged in the audit trail.\n\n(wireframe: nothing actually happens)`)) {
+        alert('wireframe: would delete + restart affected services');
+      }
+    }
+
+    // --- init ---------------------------------------------------------
+    onHash();
+  </script>
+</body>
+</html>
