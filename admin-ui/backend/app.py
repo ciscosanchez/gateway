@@ -37,7 +37,15 @@ from sources.env import (
     services_for,
     set_env_credential,
 )
-from sources.n8n_api  import is_reachable as n8n_reachable,  list_n8n_credentials
+from sources.n8n_api  import (
+    N8NError,
+    UnknownN8NType,
+    WRITABLE_TYPES as N8N_WRITABLE_TYPES,
+    delete_n8n_credential,
+    is_reachable as n8n_reachable,
+    list_n8n_credentials,
+    set_n8n_credential,
+)
 from sources.kong_api import (
     KongWriteError,
     UnknownKongConsumer,
@@ -72,12 +80,13 @@ def health() -> dict:
         pass
     return {
         "status": "ok",
-        "phase":  "E2",
+        "phase":  "1-n8n-writes",
         "sources": {
             "env":  {"enabled": True,              "writable": True},
-            "n8n":  {"enabled": n8n_reachable(),  "writable": False},
+            "n8n":  {"enabled": n8n_reachable(),  "writable": n8n_reachable()},
             "kong": {"enabled": kong_reachable(), "writable": kong_reachable()},
         },
+        "n8n_types": {k: v for k, v in N8N_WRITABLE_TYPES.items()},
         "restart": {"enabled": docker_ok},
     }
 
@@ -175,6 +184,62 @@ def clear_env_credential(name: str, req: Request, note: Optional[str] = None) ->
     )
     audit.mark_restart_pending(services_for(name))
     return cleared
+
+
+# ---------------------------------------------------------------------------
+# n8n credentials
+# ---------------------------------------------------------------------------
+
+class N8NUpsertReq(BaseModel):
+    type: str = Field(..., description="n8n credential type (see /api/health.n8n_types)")
+    data: dict = Field(default_factory=dict)
+    note: Optional[str] = None
+    existing_id: Optional[str] = None
+
+
+@app.put("/api/credentials/n8n/{name}", tags=["credentials"])
+def upsert_n8n_credential(name: str, body: N8NUpsertReq, req: Request) -> dict:
+    try:
+        saved = set_n8n_credential(name, body.type, body.data, existing_id=body.existing_id)
+    except UnknownN8NType as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except N8NError as e:
+        raise HTTPException(status_code=502, detail=str(e))
+    after = saved.pop("_after_hash", None)
+    audit.record(
+        action="create" if not body.existing_id else "update",
+        source="n8n",
+        name=name,
+        integration=saved.get("integration"),
+        before_hash=None,
+        after_hash=after,
+        note=body.note,
+        client_ip=_client_ip(req),
+    )
+    return saved
+
+
+@app.delete("/api/credentials/n8n/{name}", tags=["credentials"])
+def clear_n8n_credential(name: str, req: Request, note: Optional[str] = None) -> dict:
+    # Resolve name -> id via the list endpoint so the caller doesn't need to
+    # know n8n's internal id.
+    items = list_n8n_credentials()
+    match = next((c for c in items if c.get("name") == name), None)
+    if match is None:
+        raise HTTPException(status_code=404, detail=f"n8n credential '{name}' not found")
+    try:
+        res = delete_n8n_credential(match["n8n_id"])
+    except N8NError as e:
+        raise HTTPException(status_code=502, detail=str(e))
+    audit.record(
+        action="delete",
+        source="n8n",
+        name=name,
+        integration=match.get("integration"),
+        note=note,
+        client_ip=_client_ip(req),
+    )
+    return {"name": name, **res}
 
 
 # ---------------------------------------------------------------------------

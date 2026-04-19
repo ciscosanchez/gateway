@@ -231,24 +231,24 @@
           <label class="text-xs text-slate-500 uppercase tracking-wide">Where does this live?</label>
           <div class="grid grid-cols-3 gap-2 mt-1">
             <label class="border border-slate-300 rounded p-2 text-sm cursor-pointer hover:border-blue-400 has-[:checked]:border-blue-600 has-[:checked]:bg-blue-50">
-              <input type="radio" name="cred-source" value="env" class="mr-1" checked /> Env var
+              <input type="radio" name="cred-source" value="env" class="mr-1" checked onchange="onSourceChange()" /> Env var
               <div class="text-xs text-slate-500 mt-1">.env, requires restart</div>
             </label>
-            <label class="border border-slate-300 rounded p-2 text-sm cursor-not-allowed opacity-50">
-              <input type="radio" name="cred-source" value="n8n" class="mr-1" disabled /> n8n cred
-              <div class="text-xs text-slate-500 mt-1">read-only — use n8n UI</div>
+            <label class="border border-slate-300 rounded p-2 text-sm cursor-pointer hover:border-blue-400 has-[:checked]:border-blue-600 has-[:checked]:bg-blue-50">
+              <input type="radio" name="cred-source" value="n8n" class="mr-1" onchange="onSourceChange()" /> n8n cred
+              <div class="text-xs text-slate-500 mt-1">type-specific, hot-swap</div>
             </label>
             <label class="border border-slate-300 rounded p-2 text-sm cursor-pointer hover:border-blue-400 has-[:checked]:border-blue-600 has-[:checked]:bg-blue-50">
-              <input type="radio" name="cred-source" value="kong" class="mr-1" /> Kong consumer
+              <input type="radio" name="cred-source" value="kong" class="mr-1" onchange="onSourceChange()" /> Kong consumer
               <div class="text-xs text-slate-500 mt-1">X-API-Key, hot-reload</div>
             </label>
           </div>
         </div>
 
         <div>
-          <label class="text-xs text-slate-500 uppercase tracking-wide">Name / env var</label>
+          <label class="text-xs text-slate-500 uppercase tracking-wide">Name</label>
           <input id="cred-name" type="text" class="mt-1 w-full border border-slate-300 rounded px-3 py-2 text-sm font-mono" placeholder="SAMSARA_API_TOKEN" />
-          <div class="text-xs text-slate-500 mt-1">Must already be a known gateway variable (see .env.example).</div>
+          <div id="cred-name-hint" class="text-xs text-slate-500 mt-1">Must already be a known gateway variable (see .env.example).</div>
         </div>
 
         <div>
@@ -257,10 +257,19 @@
           <div class="text-xs text-slate-500 mt-1">Auto-derived from the variable name.</div>
         </div>
 
-        <div>
+        <!-- n8n type selector + dynamic fields -->
+        <div id="cred-n8n-type-row" class="hidden">
+          <label class="text-xs text-slate-500 uppercase tracking-wide">n8n type</label>
+          <select id="cred-n8n-type" class="mt-1 w-full border border-slate-300 rounded px-3 py-2 text-sm" onchange="renderN8nFields()"></select>
+          <div id="cred-n8n-type-hint" class="text-xs text-slate-500 mt-1"></div>
+        </div>
+        <div id="cred-n8n-fields" class="space-y-3"></div>
+
+        <!-- env/kong single-value field -->
+        <div id="cred-value-row">
           <label class="text-xs text-slate-500 uppercase tracking-wide">Value</label>
           <input id="cred-value" type="password" class="mt-1 w-full border border-slate-300 rounded px-3 py-2 text-sm font-mono" placeholder="paste secret" />
-          <div class="text-xs text-slate-500 mt-1">Stored in .env. Never echoed back in plaintext after save.</div>
+          <div class="text-xs text-slate-500 mt-1">Never echoed back in plaintext after save.</div>
         </div>
 
         <div>
@@ -307,6 +316,7 @@
     let live = false;        // flipped by initBackend() on success
     let sourcesState = {};   // {env:{enabled,writable}, n8n:..., kong:...}
     let restartState = {enabled: false};
+    let n8nTypes = {};       // {typeId: {fields, secrets, label, hint}} from /api/health
     let auditRows = [];      // populated when live
     let pendingServices = []; // populated from /api/services/pending
 
@@ -326,6 +336,7 @@
         const h = await fetch('/api/health').then(r => r.ok ? r.json() : Promise.reject(r.status));
         sourcesState = h.sources || {};
         restartState = h.restart || {enabled: false};
+        n8nTypes = h.n8n_types || {};
         const enabledSources = Object.entries(sourcesState).filter(([,v]) => v.enabled).map(([k]) => k);
         const writables = Object.entries(sourcesState).filter(([,v]) => v.writable).map(([k]) => k);
         await refreshCreds();
@@ -408,32 +419,87 @@
       } catch (_) { auditRows = []; }
     }
 
+    function onSourceChange() {
+      const source = document.querySelector('input[name="cred-source"]:checked')?.value || 'env';
+      const n8nRow   = document.getElementById('cred-n8n-type-row');
+      const n8nBox   = document.getElementById('cred-n8n-fields');
+      const valueRow = document.getElementById('cred-value-row');
+      const nameHint = document.getElementById('cred-name-hint');
+      if (source === 'n8n') {
+        n8nRow.classList.remove('hidden');
+        valueRow.classList.add('hidden');
+        nameHint.textContent = 'Name for this n8n credential (free-form; e.g. "NetSuite TBA" or "Samsara API key").';
+        const sel = document.getElementById('cred-n8n-type');
+        sel.innerHTML = Object.entries(n8nTypes)
+          .map(([id, t]) => `<option value="${id}">${t.label || id}</option>`).join('');
+        renderN8nFields();
+      } else {
+        n8nRow.classList.add('hidden');
+        n8nBox.innerHTML = '';
+        valueRow.classList.remove('hidden');
+        nameHint.textContent = source === 'env'
+          ? 'Must already be a known gateway variable (see .env.example).'
+          : 'Kong consumer username (as declared in kong/kong.yml).';
+      }
+    }
+
+    function renderN8nFields() {
+      const typeId = document.getElementById('cred-n8n-type').value;
+      const type   = n8nTypes[typeId] || {};
+      document.getElementById('cred-n8n-type-hint').textContent = type.hint || '';
+      const secrets = new Set(type.secrets || []);
+      const html = (type.fields || []).map(f => {
+        const isSecret = secrets.has(f);
+        return `<div>
+          <label class="text-xs text-slate-500 uppercase tracking-wide">${f}</label>
+          <input data-n8n-field="${f}" type="${isSecret ? 'password' : 'text'}"
+                 class="mt-1 w-full border border-slate-300 rounded px-3 py-2 text-sm font-mono" />
+        </div>`;
+      }).join('');
+      document.getElementById('cred-n8n-fields').innerHTML = html;
+    }
+
     async function saveCred() {
       const err  = document.getElementById('cred-error');
       const btn  = document.getElementById('cred-save');
       err.classList.add('hidden'); err.textContent = '';
       const source = document.querySelector('input[name="cred-source"]:checked')?.value || 'env';
       const name   = document.getElementById('cred-name').value.trim();
-      const value  = document.getElementById('cred-value').value;
       const note   = document.getElementById('cred-note').value.trim() || null;
-      if (!name || !value) {
-        err.textContent = 'name and value are required';
+      if (!name) {
+        err.textContent = 'name is required';
         err.classList.remove('hidden'); return;
       }
       if (!live || !sourcesState[source] || !sourcesState[source].writable) {
         err.textContent = `${source} source not writable. ` + (live ? '' : 'Start the backend: docker compose --profile admin up -d admin-ui');
         err.classList.remove('hidden'); return;
       }
+
+      let body;
+      if (source === 'n8n') {
+        const typeId = document.getElementById('cred-n8n-type').value;
+        const data = {};
+        document.querySelectorAll('[data-n8n-field]').forEach(el => {
+          data[el.dataset.n8nField] = el.value;
+        });
+        const existing = creds.find(c => c.source === 'n8n' && c.name === name);
+        body = { type: typeId, data, note, existing_id: existing?.n8n_id || null };
+      } else {
+        const value = document.getElementById('cred-value').value;
+        if (!value) { err.textContent = 'value is required'; err.classList.remove('hidden'); return; }
+        body = { value, note };
+      }
+
       btn.disabled = true; btn.textContent = 'Saving…';
       try {
         const r = await fetch(`/api/credentials/${source}/${encodeURIComponent(name)}`, {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ value, note })
+          body: JSON.stringify(body)
         });
         if (!r.ok) {
-          const body = await r.json().catch(() => ({detail: r.statusText}));
-          throw new Error(body.detail || r.statusText);
+          const b = await r.json().catch(() => ({detail: r.statusText}));
+          throw new Error(b.detail || r.statusText);
         }
         closeCredModal();
         await refreshCreds();
@@ -649,11 +715,20 @@
         const src = source || (row && row.source) || 'env';
         const radio = document.querySelector(`input[name="cred-source"][value="${src}"]`);
         if (radio && !radio.disabled) radio.checked = true;
+        if (src === 'n8n' && row?.n8n_type) {
+          onSourceChange();
+          const sel = document.getElementById('cred-n8n-type');
+          if ([...sel.options].some(o => o.value === row.n8n_type)) sel.value = row.n8n_type;
+          renderN8nFields();
+        } else {
+          onSourceChange();
+        }
       } else {
         modalTitle.textContent = 'Add credential';
         nameInput.value = '';
         nameInput.readOnly = false;
         integLabel.textContent = '—';
+        onSourceChange();
       }
       document.getElementById('cred-modal').classList.remove('hidden');
       document.getElementById('cred-modal').classList.add('flex');

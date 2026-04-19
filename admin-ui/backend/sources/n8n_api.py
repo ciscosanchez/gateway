@@ -58,6 +58,123 @@ def is_reachable() -> bool:
         return False
 
 
+# Whitelist of credential types we accept via the admin UI. Anything outside
+# this list requires using n8n's own Credentials screen - we don't want to
+# be a half-implemented schema-forwarder for every one of n8n's 600+ types.
+WRITABLE_TYPES = {
+    # Generic - covers API-key-in-header integrations (Samsara API, WMS, etc.)
+    "httpHeaderAuth": {
+        "fields": ["name", "value"],
+        "secrets": ["value"],
+        "label":  "HTTP Header Auth",
+        "hint":   "For API-key-in-header integrations (Samsara, WMS, generic REST)",
+    },
+    "httpBasicAuth": {
+        "fields": ["user", "password"],
+        "secrets": ["password"],
+        "label":  "HTTP Basic Auth",
+        "hint":   "Username + password",
+    },
+    # NetSuite TBA (OAuth1)
+    "oAuth1Api": {
+        "fields":  ["consumerKey", "consumerSecret", "accessToken", "accessTokenSecret", "signatureMethod", "realm"],
+        "secrets": ["consumerSecret", "accessTokenSecret"],
+        "label":   "OAuth1 (NetSuite TBA)",
+        "hint":    "signatureMethod=HMAC-SHA256; realm=your NetSuite account id",
+    },
+}
+
+
+class N8NError(RuntimeError):
+    pass
+
+
+class UnknownN8NType(N8NError):
+    pass
+
+
+def _require_known_type(type_name: str) -> dict:
+    meta = WRITABLE_TYPES.get(type_name)
+    if meta is None:
+        raise UnknownN8NType(
+            f"n8n credential type '{type_name}' is not supported from the admin UI. "
+            f"Known: {sorted(WRITABLE_TYPES)}. For other types use n8n's Credentials screen."
+        )
+    return meta
+
+
+def _validate_data(type_name: str, data: dict) -> dict:
+    meta = _require_known_type(type_name)
+    missing = [f for f in meta["fields"] if f not in data or data[f] == ""]
+    if missing:
+        raise N8NError(f"missing fields for {type_name}: {missing}")
+    return {k: data[k] for k in meta["fields"] if k in data}
+
+
+def _hash_secrets(type_name: str, data: dict) -> str:
+    """Stable hash over the secret fields only, for audit before/after."""
+    import hashlib
+    meta = WRITABLE_TYPES.get(type_name, {})
+    parts = [f"{k}={data.get(k, '')}" for k in meta.get("secrets", [])]
+    return hashlib.sha256("|".join(parts).encode("utf-8")).hexdigest()
+
+
+def _n8n_create_path() -> str:
+    return "/api/v1/credentials" if N8N_API_KEY else "/rest/credentials"
+
+
+def _n8n_item_path(cred_id: str) -> str:
+    base = "/api/v1" if N8N_API_KEY else "/rest"
+    return f"{base}/credentials/{cred_id}"
+
+
+def set_n8n_credential(name: str, type_name: str, data: dict, existing_id: Optional[str] = None) -> dict:
+    meta = _require_known_type(type_name)
+    clean = _validate_data(type_name, data)
+    payload = {"name": name, "type": type_name, "data": clean}
+    # Internal /rest/credentials expects nodesAccess for legacy reasons; the
+    # public /api/v1 accepts the simpler shape.
+    if not N8N_API_KEY:
+        payload["nodesAccess"] = []
+    try:
+        with _client() as c:
+            if existing_id:
+                r = c.patch(_n8n_item_path(existing_id), json=payload)
+            else:
+                r = c.post(_n8n_create_path(), json=payload)
+    except httpx.HTTPError as e:
+        raise N8NError(f"n8n API unreachable: {e}") from e
+    if r.status_code >= 400:
+        raise N8NError(f"n8n credential save failed: {r.status_code} {r.text[:500]}")
+    body = r.json() if r.text else {}
+    # n8n wraps its responses; unwrap if present
+    row = body.get("data", body)
+    return {
+        "name":           row.get("name") or name,
+        "integration":    TYPE_TO_INTEGRATION.get(type_name) or "—",
+        "source":         "n8n",
+        "kind":           "n8n-credential",
+        "value_masked":   f"{type_name} credential",
+        "status":         "ok",
+        "is_placeholder": False,
+        "rotated_at":     row.get("updatedAt"),
+        "n8n_id":         row.get("id") or existing_id,
+        "n8n_type":       type_name,
+        "_after_hash":    _hash_secrets(type_name, clean),
+    }
+
+
+def delete_n8n_credential(cred_id: str) -> dict:
+    try:
+        with _client() as c:
+            r = c.delete(_n8n_item_path(cred_id))
+    except httpx.HTTPError as e:
+        raise N8NError(f"n8n API unreachable: {e}") from e
+    if r.status_code >= 400 and r.status_code != 404:
+        raise N8NError(f"n8n credential delete failed: {r.status_code} {r.text[:500]}")
+    return {"n8n_id": cred_id, "deleted": r.status_code < 400}
+
+
 def list_n8n_credentials() -> list[dict]:
     """List credential records in n8n. Returns an empty list on failure so the
     UI degrades gracefully — connectivity state is surfaced via /api/health.
