@@ -82,5 +82,14 @@ docker exec gateway-redpanda-0 rpk cluster health --brokers redpanda-0:29092
 4. **Set `ADMIN_UI_USER` / `ADMIN_UI_PASSWORD`** before enabling the admin profile
    (otherwise the UI is unauthenticated).
 5. **Set `BACKUP_AGE_RECIPIENT`** so `./scripts/backup.sh` encrypts output.
-6. **Set `ALERTMANAGER_SLACK_WEBHOOK` / `ALERTMANAGER_PAGERDUTY_KEY`** so alerts route somewhere real.
+6. **Wire alerting destinations**:
+   - `ALERTMANAGER_SLACK_WEBHOOK` for real-time visibility (all severities).
+   - `ALERTMANAGER_PAGERDUTY_KEY` for paging on critical.
+   - `ZAMMAD_URL` + `ZAMMAD_API_TOKEN` + `ZAMMAD_GROUP` + `ZAMMAD_CUSTOMER`
+     to auto-create tickets from critical alerts. Mint the token under
+     *Profile → Token Access* in Zammad (`ticket.agent` perm). Then
+     **import `workflows/alertmanager-to-zammad.json`** into n8n
+     (*Workflows → Import from File → Activate*). Five false-positive
+     filters keep the helpdesk clean; walkthrough in
+     [`docs/alerting-to-zammad.md`](docs/alerting-to-zammad.md).
 7. Read [`docs/SECURITY.md`](docs/SECURITY.md) and walk [`docs/DEPLOYMENT-CHECKLIST.md`](docs/DEPLOYMENT-CHECKLIST.md).

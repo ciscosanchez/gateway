@@ -110,6 +110,25 @@ docker exec gateway-redpanda-0 rpk topic consume samsara-events \
 
 Same script runs as part of CI's Smoke job.
 
+### Optional: auto-create Zammad helpdesk tickets on critical alerts
+
+Severity-gated + fingerprint-deduped so the helpdesk doesn't get noise.
+
+```bash
+# 1. Mint a token in Zammad: Profile -> Token Access, perm = ticket.agent
+# 2. Add to .env:
+#    ZAMMAD_URL=https://helpdesk.goarmstrong.com
+#    ZAMMAD_API_TOKEN=<token>
+#    ZAMMAD_GROUP=Users
+#    ZAMMAD_CUSTOMER=info@goarmstrong.com
+# 3. Restart n8n so it picks up the env
+docker compose up -d n8n n8n-worker
+# 4. Import workflows/alertmanager-to-zammad.json in n8n UI, activate it
+```
+
+Full walkthrough + end-to-end curl test + tuning guide in
+[`docs/alerting-to-zammad.md`](docs/alerting-to-zammad.md).
+
 ---
 
 ## Services
