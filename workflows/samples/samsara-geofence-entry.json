@@ -1,0 +1,30 @@
+{
+  "eventType": "GeofenceEntry",
+  "eventId": "3f8a2b1c-sample-0001",
+  "orgId": 12345,
+  "time": "2026-04-19T15:00:00Z",
+  "webhookId": "wh_sample_0001",
+  "data": {
+    "vehicle": {
+      "id": 281474976710656,
+      "name": "Truck 42"
+    },
+    "driver": {
+      "id": 281474976710999,
+      "name": "Pat Example"
+    },
+    "location": {
+      "latitude": 37.7749,
+      "longitude": -122.4194,
+      "heading": 90.0,
+      "speedMilesPerHour": 0.0,
+      "reverseGeo": {
+        "formattedLocation": "100 Main St, Example City, CA"
+      }
+    },
+    "geofence": {
+      "id": 9001,
+      "name": "Warehouse A - Dock 3"
+    }
+  }
+}
