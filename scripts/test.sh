@@ -43,7 +43,7 @@ echo "── Rate limiting (burst past the 100/min quota → expect 429) ──"
 # Only runs if SMOKE_API_KEY is set, since this requires a real key.
 if [ -n "${SMOKE_API_KEY:-}" ]; then
   seen_429=0
-  for i in $(seq 1 110); do
+  for _ in $(seq 1 110); do
     c=$(curl -sk -o /dev/null -w "%{http_code}" \
         -H "X-API-Key: ${SMOKE_API_KEY}" -XPOST \
         "https://localhost:8443/samsara" || echo 000)
