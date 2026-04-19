@@ -4,6 +4,69 @@
 
 NetSuite is the most complex integration in this stack. This guide covers the setup and best practices.
 
+## 5-Minute Activation Checklist (If You Already Have Keys)
+
+Use this when you already have all 5 values:
+
+- `NETSUITE_ACCOUNT_ID`
+- `NETSUITE_CONSUMER_KEY`
+- `NETSUITE_CONSUMER_SECRET`
+- `NETSUITE_TOKEN_ID`
+- `NETSUITE_TOKEN_SECRET`
+
+### 1) Add credentials to `.env` (1 minute)
+
+```bash
+NETSUITE_ACCOUNT_ID=1234567
+NETSUITE_CONSUMER_KEY=...
+NETSUITE_CONSUMER_SECRET=...
+NETSUITE_TOKEN_ID=...
+NETSUITE_TOKEN_SECRET=...
+```
+
+### 2) Restart n8n services so env vars are loaded (1 minute)
+
+```bash
+docker compose up -d n8n n8n-worker
+```
+
+### 3) Create n8n OAuth1 credential `NetSuite TBA` (1 minute)
+
+In n8n UI (`http://localhost:5678`):
+
+1. Credentials → New → OAuth1 API
+2. Fill Consumer Key/Secret + Token ID/Secret
+3. Set Realm = `NETSUITE_ACCOUNT_ID`
+4. Set Signature Method = `HMAC-SHA256`
+5. Add Auth Data To = Header
+6. Save as `NetSuite TBA`
+
+### 4) Import and activate workflow (1 minute)
+
+1. Import `workflows/netsuite-create-sales-order.json`
+2. Open the NetSuite HTTP Request node
+3. Select credential `NetSuite TBA`
+4. Activate the workflow
+
+### 5) Run smoke test (1 minute)
+
+```bash
+docker compose exec redpanda-0 rpk topic produce orders <<'EOF'
+{"customer_id":"<real-id>","line_items":[{"netsuite_item_id":"<real-id>","quantity":1,"unit_price":10,"description":"POC"}],"external_order_id":"POC-001"}
+EOF
+```
+
+Expected result:
+
+- n8n execution succeeds
+- A new Sales Order appears in NetSuite
+
+If it fails fast, check first:
+
+- Account ID format (`1234567` vs `1234567_SB1`)
+- Credential signature method (`HMAC-SHA256`)
+- Role permissions (`REST Web Services`, `Login Using Access Tokens`, `Sales Order`)
+
 ## Phase 1: NetSuite Setup (Do This First)
 
 ### 1. Enable Token-Based Authentication (TBA)
@@ -272,6 +335,74 @@ Cache frequently accessed data:
 - Subsidiary mappings
 
 Use Redis or n8n's built-in cache.
+
+## Inbound: NetSuite → Gateway (User Event Script template)
+
+The sections above cover Gateway → NetSuite. For NetSuite to push events to
+us — "a sales order was just created/updated" — install a User Event script
+on the record types you care about, deployed as **After Submit**.
+
+```javascript
+/**
+ * @NApiVersion 2.1
+ * @NScriptType UserEventScript
+ */
+define(['N/https', 'N/runtime'], function (https, runtime) {
+  var GATEWAY_URL = runtime.getCurrentScript().getParameter('custscript_gateway_url');
+  var GATEWAY_KEY = runtime.getCurrentScript().getParameter('custscript_gateway_key');
+
+  function afterSubmit(ctx) {
+    if (ctx.type !== ctx.UserEventType.CREATE && ctx.type !== ctx.UserEventType.EDIT) return;
+
+    var rec = ctx.newRecord;
+    var payload = {
+      source: 'netsuite',
+      event_type:  ctx.type,           // 'create' | 'edit'
+      record_type: rec.type,           // e.g. 'salesorder'
+      id:          rec.id,
+      tran_id:     rec.getValue({ fieldId: 'tranid' }),
+      entity:      rec.getValue({ fieldId: 'entity' }),
+      total:       rec.getValue({ fieldId: 'total' }),
+      status:      rec.getValue({ fieldId: 'orderstatus' }),
+      timestamp:   new Date().toISOString()
+    };
+
+    try {
+      https.post({
+        url: GATEWAY_URL,              // https://<gateway>/netsuite
+        body: JSON.stringify(payload),
+        headers: {
+          'Content-Type': 'application/json',
+          'X-API-Key':    GATEWAY_KEY
+        }
+      });
+    } catch (e) {
+      // Never fail the NetSuite transaction because the webhook failed -
+      // the Gateway has its own retry + DLQ. Log only.
+      log.error('gateway webhook failed', e);
+    }
+  }
+  return { afterSubmit: afterSubmit };
+});
+```
+
+**Deployment:**
+
+1. Upload to Documents → SuiteScripts.
+2. Create a Script record (type: User Event) pointing at the file.
+3. Add two script parameters:
+   - `custscript_gateway_url` — `https://<your-gateway>/netsuite`
+   - `custscript_gateway_key` — the key-auth value from the `netsuite-client` consumer in `kong/kong.yml`
+4. Deploy against the record types you want to publish. Release; log level
+   `Audit` while testing, `Error` in production.
+5. User Event scripts run inline with the transaction — keep the call ≤2s.
+   For heavier processing, buffer to a queue table and post asynchronously
+   from a Scheduled Script.
+
+On the Gateway side, add an n8n workflow on the `/netsuite` webhook that
+validates `X-API-Key`, publishes to `orders` (or `netsuite-updates`) on
+Kafka, and returns `204`. Downstream workflows (WMS pick, dispatch, Unigroup
+booking) consume the event independently.
 
 ## Resources
 

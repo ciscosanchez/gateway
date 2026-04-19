@@ -103,13 +103,18 @@ services:
         https_redirect_status_code: 301
         tags: [wms]
 
+  # Unigroup Converge is primarily OUTBOUND for us (we call their Keycloak +
+  # GraphQL via the unigroup-outbound workflow). This inbound route is kept
+  # in case Converge later supports webhooks / event push. If/when Unigroup
+  # confirms no webhook support, delete this route - the tag stays `unigroup`,
+  # not `edi`, because Converge is not EDI.
   - name: unigroup-service
     url: http://n8n:5678/webhook/unigroup
     retries: 2
     connect_timeout: 5000
     read_timeout: 30000
     write_timeout: 30000
-    tags: [unigroup, edi]
+    tags: [unigroup]
     routes:
       - name: unigroup-route
         paths: ["/unigroup"]
@@ -117,7 +122,7 @@ services:
         protocols: [https]
         strip_path: false
         https_redirect_status_code: 301
-        tags: [unigroup, edi]
+        tags: [unigroup]
 
 # -----------------------------
 # Consumers & API keys

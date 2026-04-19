@@ -2,7 +2,7 @@
 
 In-house integration platform: **Kong** (DB-less) → **Redpanda** (3-node Kafka cluster) → **n8n** (queue-mode workflow orchestration), backed by Postgres + Redis and a full Prometheus / Grafana / Loki observability stack.
 
-**Integrations:** Samsara • NetSuite • Unigroup EDI • WMS • Custom APIs
+**Integrations:** Samsara • NetSuite (OAuth1 TBA) • Unigroup Converge (OAuth2 + GraphQL) • WMS • Custom APIs
 
 > **Status:** HA-ready stack (3-broker Redpanda, queue-mode n8n workers, shared
 > rate-limit counters) that runs on a single host via `docker-compose` for
