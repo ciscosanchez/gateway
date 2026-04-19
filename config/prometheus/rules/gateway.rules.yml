@@ -99,3 +99,57 @@ groups:
         for: 2m
         labels: { severity: critical }
         annotations: { summary: "Redis is down" }
+
+  # ---------------------------------------------------------------------
+  # admin-ui (profile-gated; rules only fire when the target is scraped)
+  # ---------------------------------------------------------------------
+  # `for:` clauses below are deliberately >= 5m so flaps never reach the
+  # helpdesk. If you see a real issue take longer to surface, tune here.
+  - name: admin-ui
+    interval: 30s
+    rules:
+      - alert: AdminUIErrorRate
+        expr: |
+          sum(rate(admin_errors_total[5m]))
+            / sum(rate(admin_requests_total[5m])) > 0.05
+        for: 10m
+        labels:
+          severity: critical
+          integration: admin-ui
+          service: admin-ui
+        annotations:
+          summary: "admin-ui 5xx rate > 5% for 10m"
+          description: |
+            The admin UI backend returned 5xx on more than 5% of requests
+            over the last 5 minutes, sustained for 10m. A write path or
+            upstream (n8n / kong) likely broke. Logs: loki tag=admin-ui.
+
+      - alert: AdminUIRotationFailures
+        expr: |
+          increase(admin_requests_total{path="/api/credentials/env/{name}/rotate",status="400"}[10m])
+            >
+          increase(admin_requests_total{path="/api/credentials/env/{name}/rotate",status="200"}[10m])
+        for: 5m
+        labels:
+          severity: critical
+          integration: admin-ui
+          service: admin-ui
+        annotations:
+          summary: "More env rotations rolled back than succeeded in the last 10m"
+          description: |
+            Probe-driven rollback is firing more than it's succeeding. Either
+            the new credential values are wrong or the target integration is
+            down. Check audit log for rotate_failed rows.
+
+      - alert: AdminUIDown
+        expr: up{job="admin-ui"} == 0
+        # Deliberately long: admin-ui is opt-in (profile-gated). We only want
+        # to page if it was up and went down, not if it simply isn't running.
+        # 15m + a manually-silenced alert is the intended workflow.
+        for: 15m
+        labels:
+          severity: warning
+          integration: admin-ui
+          service: admin-ui
+        annotations:
+          summary: "admin-ui backend not scrapeable for 15m"
