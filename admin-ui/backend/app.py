@@ -185,6 +185,72 @@ def _client_ip(req: Request) -> str:
     return req.client.host if req.client else "unknown"
 
 
+@app.post("/api/credentials/env/{name}/rotate", tags=["credentials"])
+def rotate_env_credential(
+    name: str, body: UpsertReq, req: Request,
+    actor: str = Depends(_current_actor),
+) -> dict:
+    """Write the new value, run the integration's probe, and roll back if the
+    probe fails. Only the integration's own probe runs here; an unrelated
+    env var (no probe) is treated as trivially verified.
+    """
+    # Remember the old value for rollback (read from disk - dotenv)
+    from dotenv import dotenv_values
+    from sources.env import ENV_FILE
+    old_raw = (dotenv_values(str(ENV_FILE)).get(name) or "").strip()
+
+    # Write the new value through the normal path
+    try:
+        saved = set_env_credential(name, body.value)
+    except UnknownCredential as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except EnvWriteError as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+    # Run the matching probe (if any) against the fresh .env
+    integration = saved.get("integration") or ""
+    probe_key = healthchecks.probe_for_integration(integration)
+    probe = healthchecks.run(probe_key) if probe_key else {
+        "ok": True, "latency_ms": 0, "detail": "no probe defined for this integration — write applied without verification",
+    }
+
+    if not probe["ok"]:
+        # Rollback: restore the previous value on disk
+        try:
+            set_env_credential(name, old_raw)
+        except EnvWriteError as rollback_err:
+            audit.record(
+                action="rollback_failed", source="env", name=name,
+                integration=integration, note=f"probe: {probe['detail']}; rollback: {rollback_err}",
+                client_ip=_client_ip(req), actor=actor,
+            )
+            raise HTTPException(
+                status_code=500,
+                detail=f"probe failed AND rollback failed: {probe['detail']} | rollback: {rollback_err}",
+            )
+        audit.record(
+            action="rotate_failed", source="env", name=name,
+            integration=integration, note=f"probe: {probe['detail']}",
+            client_ip=_client_ip(req), actor=actor,
+        )
+        raise HTTPException(
+            status_code=400,
+            detail={"message": "probe rejected new value; rolled back", "probe": probe},
+        )
+
+    # Probe passed — record the rotate + schedule a restart
+    before = saved.pop("_before_hash", None)
+    after  = saved.pop("_after_hash", None)
+    audit.record(
+        action="rotate", source="env", name=name,
+        integration=integration, before_hash=before, after_hash=after,
+        note=body.note or f"probe ok in {probe['latency_ms']}ms",
+        client_ip=_client_ip(req), actor=actor,
+    )
+    audit.mark_restart_pending(services_for(name))
+    return {"credential": saved, "probe": probe}
+
+
 @app.put("/api/credentials/env/{name}", tags=["credentials"])
 def upsert_env_credential(
     name: str, body: UpsertReq, req: Request,

@@ -18,9 +18,22 @@ from __future__ import annotations
 
 import os
 import time
+from pathlib import Path
 from typing import Callable, Tuple
 
 import httpx
+from dotenv import dotenv_values
+
+# We read values from .env directly (not os.getenv) so probes run against
+# the freshly-written state. The admin-ui container's process env is frozen
+# at container start; .env changes mid-run must be picked up from disk.
+_ENV_FILE = Path(os.getenv("ADMIN_ENV_FILE", "/app/env/.env"))
+
+
+def _env_val(name: str) -> str:
+    if not _ENV_FILE.exists():
+        return os.getenv(name, "")
+    return (dotenv_values(str(_ENV_FILE)).get(name) or "").strip()
 
 
 def _probe(fn: Callable[[], Tuple[bool, str]]) -> dict:
@@ -38,7 +51,7 @@ def _probe(fn: Callable[[], Tuple[bool, str]]) -> dict:
 
 
 def _samsara() -> Tuple[bool, str]:
-    token = os.getenv("SAMSARA_API_TOKEN", "")
+    token = _env_val("SAMSARA_API_TOKEN")
     if not token or token == "CHANGE_ME":
         return False, "SAMSARA_API_TOKEN not set"
     with httpx.Client(timeout=10.0) as c:
@@ -55,12 +68,12 @@ def _samsara() -> Tuple[bool, str]:
 
 
 def _unigroup() -> Tuple[bool, str]:
-    env = (os.getenv("UNIGROUP_ENV", "staging") or "staging").lower()
+    env = (_env_val("UNIGROUP_ENV") or "staging").lower()
     suffix = "PROD" if env == "production" else "STAGING"
-    token_url = os.getenv(f"UNIGROUP_TOKEN_URL_{suffix}", "")
-    client_id = os.getenv("UNIGROUP_CLIENT_ID", "")
-    client_secret = os.getenv("UNIGROUP_CLIENT_SECRET", "")
-    scope = os.getenv("UNIGROUP_OAUTH_SCOPE", "") or ""
+    token_url = _env_val(f"UNIGROUP_TOKEN_URL_{suffix}") or os.getenv(f"UNIGROUP_TOKEN_URL_{suffix}", "")
+    client_id = _env_val("UNIGROUP_CLIENT_ID")
+    client_secret = _env_val("UNIGROUP_CLIENT_SECRET")
+    scope = _env_val("UNIGROUP_OAUTH_SCOPE")
     if not (token_url and client_id and client_secret) or client_id == "CHANGE_ME":
         return False, "UNIGROUP_CLIENT_ID / UNIGROUP_CLIENT_SECRET not set"
     with httpx.Client(timeout=10.0) as c:
@@ -80,9 +93,8 @@ def _unigroup() -> Tuple[bool, str]:
 
 def _netsuite() -> Tuple[bool, str]:
     # OAuth1 TBA signing is stateful enough that it's worth deferring to the
-    # n8n credential-test endpoint once we have it. Until then this probe
-    # just verifies the account id env is present.
-    acct = os.getenv("NETSUITE_ACCOUNT_ID", "")
+    # n8n credential-test endpoint once we have it.
+    acct = _env_val("NETSUITE_ACCOUNT_ID")
     if not acct or acct == "CHANGE_ME":
         return False, "NETSUITE_ACCOUNT_ID not set"
     return True, f"account id present ({acct}); OAuth1 TBA sign-probe not yet implemented"
@@ -101,3 +113,12 @@ def run(name: str) -> dict:
         return {"ok": False, "latency_ms": 0,
                 "detail": f"no probe for '{name}'. Known: {sorted(PROBES)}"}
     return _probe(fn)
+
+
+def probe_for_integration(integration: str) -> str | None:
+    """Map an integration name (as used in REGISTRY) to the probe key."""
+    return {
+        "Samsara":   "samsara",
+        "NetSuite":  "netsuite",
+        "Unigroup":  "unigroup",
+    }.get(integration)

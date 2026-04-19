@@ -514,6 +514,36 @@
       }
     }
 
+    async function rotateCred(name) {
+      if (!live || !sourcesState.env || !sourcesState.env.writable) {
+        alert('Backend not reachable or env source not writable.'); return;
+      }
+      const value = prompt(`Rotate ${name}\n\nEnter the NEW value. The backend will run the integration's health probe with the new value; if the probe fails, the old value is automatically restored.`);
+      if (!value) return;
+      const note = prompt('Audit note (optional):', 'quarterly rotation');
+      try {
+        const r = await fetch(`/api/credentials/env/${encodeURIComponent(name)}/rotate`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ value, note })
+        });
+        const body = await r.json().catch(() => ({detail: r.statusText}));
+        if (!r.ok) {
+          const probeDetail = body?.detail?.probe?.detail || body.detail || r.statusText;
+          alert(`Rotate rejected (old value restored):\n\n${probeDetail}`);
+        } else {
+          const p = body.probe || {};
+          alert(`Rotated ${name}.\nProbe: ${p.detail || 'ok'} (${p.latency_ms||0}ms)\n\nRestart queued for services that consume this var.`);
+        }
+        await refreshCreds();
+        await refreshAudit();
+        await refreshPending();
+        renderCreds('all');
+      } catch (e) {
+        alert('Rotate failed: ' + e.message);
+      }
+    }
+
     async function deleteCred(name, source) {
       source = source || 'env';
       if (!live || !sourcesState[source] || !sourcesState[source].writable) {
@@ -636,6 +666,7 @@
               <td class="px-4 py-2">${status}</td>
               <td class="px-4 py-2 text-right">
                 <button class="text-xs text-slate-600 hover:text-blue-600" onclick="openCredModal('${c.name}','${c.source}')">Edit</button>
+                ${c.source === 'env' ? `<button class="text-xs text-slate-600 hover:text-emerald-600 ml-2" onclick="rotateCred('${c.name}')" title="Write new value, probe integration, rollback on failure">Rotate</button>` : ''}
                 <button class="text-xs text-slate-600 hover:text-red-600 ml-2" onclick="deleteCred('${c.name}','${c.source}')">Delete</button>
               </td>
             </tr>
