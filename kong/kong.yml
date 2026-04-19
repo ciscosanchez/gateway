@@ -108,6 +108,22 @@ services:
   # in case Converge later supports webhooks / event push. If/when Unigroup
   # confirms no webhook support, delete this route - the tag stays `unigroup`,
   # not `edi`, because Converge is not EDI.
+  - name: dispatch-service
+    url: http://n8n:5678/webhook/dispatch
+    retries: 2
+    connect_timeout: 5000
+    read_timeout: 30000
+    write_timeout: 30000
+    tags: [dispatch]
+    routes:
+      - name: dispatch-route
+        paths: ["/dispatch"]
+        methods: [POST, GET, OPTIONS]
+        protocols: [https]
+        strip_path: false
+        https_redirect_status_code: 301
+        tags: [dispatch]
+
   - name: unigroup-service
     url: http://n8n:5678/webhook/unigroup
     retries: 2
@@ -143,6 +159,10 @@ consumers:
     tags: [wms]
     keyauth_credentials:
       - key: REPLACE_ME_wms_api_key
+  - username: dispatch-client
+    tags: [dispatch]
+    keyauth_credentials:
+      - key: REPLACE_ME_dispatch_api_key
   - username: unigroup-client
     tags: [unigroup]
     keyauth_credentials:

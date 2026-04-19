@@ -26,6 +26,10 @@ topics=(
   "edi-outbound           6 3 2592000000 zstd"        # 30d
   "netsuite-updates      12 3 604800000  zstd"        # 7d
   "wms-events             6 3 604800000  zstd"        # 7d
+  "wms-out                6 3 2592000000 zstd"        # 30d - outbound to WMS
+  "wms-updates            6 3 604800000  zstd"        # 7d  - WMS responses
+  "dispatch-out           6 3 2592000000 zstd"        # 30d - outbound to Dispatch
+  "dispatch-updates       6 3 604800000  zstd"        # 7d  - Dispatch responses
   # Dead-letter queue - low volume, long retention for forensic analysis
   "errors-dlq             3 3 7776000000 zstd"        # 90d
 )

@@ -52,6 +52,10 @@ REGISTRY: dict[str, dict] = {
     "WMS_API_KEY":                {"integration": "WMS",      "kind": "secret", "services": N8N},
     "WMS_API_URL":                {"integration": "WMS",      "kind": "config", "services": N8N},
 
+    # --- Dispatch ---
+    "DISPATCH_API_KEY":           {"integration": "Dispatch", "kind": "secret", "services": N8N},
+    "DISPATCH_API_URL":           {"integration": "Dispatch", "kind": "config", "services": N8N},
+
     # --- Infrastructure ---
     "POSTGRES_PASSWORD":          {"integration": "Infra", "kind": "secret", "services": ["postgres"] + N8N + ["postgres-exporter"]},
     "REDIS_PASSWORD":             {"integration": "Infra", "kind": "secret", "services": ["redis", "kong"] + N8N + ["redis-exporter"]},
