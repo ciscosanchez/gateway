@@ -29,6 +29,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 import audit
+import healthchecks
 import services as svc_mod
 from sources.env import (
     EnvWriteError,
@@ -360,6 +361,33 @@ def clear_kong_credential(
         actor=actor,
     )
     return cleared
+
+
+# ---------------------------------------------------------------------------
+# Integration test (per-integration connection probe)
+# ---------------------------------------------------------------------------
+
+@app.get("/api/integrations", tags=["integrations"])
+def list_integration_probes(actor: str = Depends(_current_actor)) -> dict:
+    return {"probes": sorted(healthchecks.PROBES.keys())}
+
+
+@app.post("/api/integrations/{name}/test", tags=["integrations"])
+def test_integration(
+    name: str, req: Request,
+    actor: str = Depends(_current_actor),
+) -> dict:
+    result = healthchecks.run(name)
+    audit.record(
+        action="test",
+        source="integration",
+        name=name,
+        integration=name.capitalize(),
+        note=f"{'ok' if result['ok'] else 'fail'}: {result.get('detail','')[:200]}",
+        client_ip=_client_ip(req),
+        actor=actor,
+    )
+    return {"name": name, **result}
 
 
 # ---------------------------------------------------------------------------

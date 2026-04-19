@@ -184,6 +184,14 @@ jobs:
         run: curl -fsS http://127.0.0.1:8001/status
       - name: Prometheus health
         run: curl -fsS http://127.0.0.1:9090/-/ready
+      - name: Samsara replay (full funnel: Kong HMAC+key-auth -> n8n -> Kafka)
+        # Uses placeholder creds from .env; proves the pipeline works without
+        # real Samsara traffic. SMOKE_API_KEY in .env matches kong.yml dev key.
+        run: |
+          ./scripts/samsara-replay.sh
+          echo "---"
+          echo "Tampered signature should 401 (HMAC path)"
+          TAMPER=1 ./scripts/samsara-replay.sh || true
       - name: Fail on service errors
         run: |
           # Known-benign log noise that isn't a real failure signal:
