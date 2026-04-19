@@ -22,10 +22,12 @@
 </head>
 <body class="bg-slate-50 text-slate-900 antialiased">
 
-  <!-- banner: this is a wireframe, not wired to anything -->
-  <div class="bg-amber-100 border-b border-amber-300 text-amber-900 text-sm px-4 py-2 text-center">
-    <strong>Wireframe only.</strong> Data below is mocked. No backend is wired — click around to feel the shape.
-    See <a class="underline font-semibold" href="./README.md">admin-ui/README.md</a> for what a real build would need.
+  <!-- banner: flips between "wireframe" and "live backend" based on /api/health -->
+  <div id="status-banner" class="bg-amber-100 border-b border-amber-300 text-amber-900 text-sm px-4 py-2 text-center">
+    <span id="status-banner-text">
+      <strong>Wireframe mode.</strong> Backend not reached — using mock data.
+      Start it with <kbd>docker compose --profile admin up -d admin-ui</kbd>, then reload.
+    </span>
   </div>
 
   <!-- top nav -->
@@ -295,8 +297,12 @@
   </div>
 
   <script>
-    // --- mock data ----------------------------------------------------
-    const creds = [
+    // --- data: live from backend if reachable, else mock ---------------
+    // Frontend normalizes to a single shape: {name, integration, source,
+    // value, rotated, status}. When live, the API returns value_masked
+    // + rotated_at; we map those here so the rest of the UI is source-
+    // agnostic.
+    const MOCK_CREDS = [
       { name:'SAMSARA_API_TOKEN',       integration:'Samsara',  source:'env',  value:'samsara_api_•••••••x9', rotated:'2026-04-01', status:'ok' },
       { name:'SAMSARA_WEBHOOK_SECRET',  integration:'Samsara',  source:'env',  value:'•••••••••••••••••a3', rotated:'2026-04-01', status:'ok' },
       { name:'NETSUITE_ACCOUNT_ID',     integration:'NetSuite', source:'env',  value:'1234567',             rotated:'—',         status:'ok' },
@@ -311,6 +317,39 @@
       { name:'wms-client',              integration:'WMS',      source:'kong', value:'X-API-Key ••••••7e',  rotated:'2026-04-02',status:'ok' },
       { name:'unigroup-client',         integration:'Unigroup', source:'kong', value:'X-API-Key ••••••2b',  rotated:'2026-04-02',status:'ok' }
     ];
+    let creds = MOCK_CREDS.slice();
+    let live = false;   // flipped by initBackend() on success
+
+    function normalizeApiItem(it) {
+      return {
+        name:        it.name,
+        integration: it.integration,
+        source:      it.source,
+        value:       it.value_masked ?? '(unset)',
+        rotated:     it.rotated_at ?? '—',
+        status:      it.status
+      };
+    }
+
+    async function initBackend() {
+      try {
+        const h = await fetch('/api/health').then(r => r.ok ? r.json() : Promise.reject(r.status));
+        const enabledSources = Object.entries(h.sources || {}).filter(([,v]) => v.enabled).map(([k]) => k);
+        const c = await fetch('/api/credentials').then(r => r.ok ? r.json() : Promise.reject(r.status));
+        creds = (c.items || []).map(normalizeApiItem);
+        live = true;
+        const banner = document.getElementById('status-banner');
+        banner.className = 'bg-emerald-50 border-b border-emerald-200 text-emerald-900 text-sm px-4 py-2 text-center';
+        document.getElementById('status-banner-text').innerHTML =
+          `<strong>Live.</strong> Backend phase ${h.phase || '?'} — ${enabledSources.length} source(s) connected: ${enabledSources.join(', ')}. ` +
+          `Writes: ${Object.entries(h.sources || {}).filter(([,v]) => v.writable).map(([k])=>k).join(', ') || '<em>read-only</em>'}.`;
+        // re-render whatever view we're on
+        onHash();
+      } catch (e) {
+        // silent fallback to mock (banner already shows wireframe state)
+        console.info('admin backend unreachable, using mock:', e);
+      }
+    }
     const integrationDetails = {
       samsara: {
         title:'Samsara', status:'healthy',
@@ -460,6 +499,7 @@
 
     // --- init ---------------------------------------------------------
     onHash();
+    initBackend();
   </script>
 </body>
 </html>
