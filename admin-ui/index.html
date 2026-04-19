@@ -204,28 +204,8 @@
     <!-- ==================================================== -->
     <section id="view-audit" class="view">
       <h1 class="text-2xl font-semibold tracking-tight mb-1">Audit log</h1>
-      <p class="text-slate-500 mb-6">Who changed what, when. Immutable and queryable.</p>
-      <div class="bg-white border border-slate-200 rounded-lg divide-y divide-slate-200">
-        <div class="p-4 flex items-start gap-3">
-          <span class="text-xs text-slate-500 w-36 flex-shrink-0">2026-04-19 15:22</span>
-          <div>
-            <div><strong>admin</strong> rotated env var <kbd>SAMSARA_API_TOKEN</kbd></div>
-            <div class="text-xs text-slate-500">n8n + n8n-worker restarted automatically</div>
-          </div>
-        </div>
-        <div class="p-4 flex items-start gap-3">
-          <span class="text-xs text-slate-500 w-36 flex-shrink-0">2026-04-18 09:03</span>
-          <div>
-            <div><strong>admin</strong> created Kong consumer <kbd>samsara-client</kbd></div>
-          </div>
-        </div>
-        <div class="p-4 flex items-start gap-3">
-          <span class="text-xs text-slate-500 w-36 flex-shrink-0">2026-04-17 16:45</span>
-          <div>
-            <div><strong>admin</strong> imported n8n credential <kbd>NetSuite TBA</kbd></div>
-          </div>
-        </div>
-      </div>
+      <p class="text-slate-500 mb-6">Who changed what, when. Append-only.</p>
+      <div id="audit-rows" class="bg-white border border-slate-200 rounded-lg divide-y divide-slate-200"></div>
     </section>
 
   </main>
@@ -248,49 +228,49 @@
               <input type="radio" name="cred-source" value="env" class="mr-1" checked /> Env var
               <div class="text-xs text-slate-500 mt-1">.env, requires restart</div>
             </label>
-            <label class="border border-slate-300 rounded p-2 text-sm cursor-pointer hover:border-blue-400 has-[:checked]:border-blue-600 has-[:checked]:bg-blue-50">
-              <input type="radio" name="cred-source" value="n8n" class="mr-1" /> n8n cred
-              <div class="text-xs text-slate-500 mt-1">per-node, hot-swap</div>
+            <label class="border border-slate-300 rounded p-2 text-sm cursor-not-allowed opacity-50">
+              <input type="radio" name="cred-source" value="n8n" class="mr-1" disabled /> n8n cred
+              <div class="text-xs text-slate-500 mt-1">Phase D (coming)</div>
             </label>
-            <label class="border border-slate-300 rounded p-2 text-sm cursor-pointer hover:border-blue-400 has-[:checked]:border-blue-600 has-[:checked]:bg-blue-50">
-              <input type="radio" name="cred-source" value="kong" class="mr-1" /> Kong consumer
-              <div class="text-xs text-slate-500 mt-1">X-API-Key for callers</div>
+            <label class="border border-slate-300 rounded p-2 text-sm cursor-not-allowed opacity-50">
+              <input type="radio" name="cred-source" value="kong" class="mr-1" disabled /> Kong consumer
+              <div class="text-xs text-slate-500 mt-1">Phase E (coming)</div>
             </label>
           </div>
         </div>
 
         <div>
           <label class="text-xs text-slate-500 uppercase tracking-wide">Name / env var</label>
-          <input type="text" class="mt-1 w-full border border-slate-300 rounded px-3 py-2 text-sm font-mono" placeholder="SAMSARA_API_TOKEN" />
-          <div class="text-xs text-slate-500 mt-1">Conventionally UPPER_SNAKE_CASE for env vars.</div>
+          <input id="cred-name" type="text" class="mt-1 w-full border border-slate-300 rounded px-3 py-2 text-sm font-mono" placeholder="SAMSARA_API_TOKEN" />
+          <div class="text-xs text-slate-500 mt-1">Must already be a known gateway variable (see .env.example).</div>
         </div>
 
         <div>
           <label class="text-xs text-slate-500 uppercase tracking-wide">Integration</label>
-          <select class="mt-1 w-full border border-slate-300 rounded px-3 py-2 text-sm">
-            <option>Samsara</option><option>NetSuite</option><option>Unigroup</option>
-            <option>WMS</option><option>Dispatch</option><option>(unassigned)</option>
-          </select>
+          <div id="cred-integration" class="mt-1 text-sm font-mono text-slate-700">—</div>
+          <div class="text-xs text-slate-500 mt-1">Auto-derived from the variable name.</div>
         </div>
 
         <div>
           <label class="text-xs text-slate-500 uppercase tracking-wide">Value</label>
-          <input type="password" class="mt-1 w-full border border-slate-300 rounded px-3 py-2 text-sm font-mono" placeholder="paste secret" />
-          <div class="text-xs text-slate-500 mt-1">Stored encrypted. Never echoed back in plaintext after save.</div>
+          <input id="cred-value" type="password" class="mt-1 w-full border border-slate-300 rounded px-3 py-2 text-sm font-mono" placeholder="paste secret" />
+          <div class="text-xs text-slate-500 mt-1">Stored in .env. Never echoed back in plaintext after save.</div>
         </div>
 
         <div>
-          <label class="text-xs text-slate-500 uppercase tracking-wide">Expires</label>
-          <input type="date" class="mt-1 w-full border border-slate-300 rounded px-3 py-2 text-sm" />
-          <div class="text-xs text-slate-500 mt-1">Optional. If set, we'll remind you at 30/7/1 days.</div>
+          <label class="text-xs text-slate-500 uppercase tracking-wide">Note (audit)</label>
+          <input id="cred-note" type="text" class="mt-1 w-full border border-slate-300 rounded px-3 py-2 text-sm" placeholder="rotating quarterly" />
+          <div class="text-xs text-slate-500 mt-1">Free-form context written to the audit log.</div>
         </div>
+
+        <div id="cred-error" class="hidden bg-red-50 border border-red-200 text-red-800 text-sm rounded p-2"></div>
 
       </div>
       <div class="px-6 py-4 bg-slate-50 border-t border-slate-200 flex items-center justify-between">
         <div class="text-xs text-slate-500">Changes are logged to the <a href="#audit" class="underline">audit log</a>.</div>
         <div class="flex gap-2">
           <button class="px-3 py-2 text-sm border border-slate-300 rounded hover:bg-white" onclick="closeCredModal()">Cancel</button>
-          <button class="px-3 py-2 text-sm bg-blue-600 hover:bg-blue-700 text-white rounded" onclick="alert('wireframe: would save + restart affected services')">Save</button>
+          <button id="cred-save" class="px-3 py-2 text-sm bg-blue-600 hover:bg-blue-700 text-white rounded" onclick="saveCred()">Save</button>
         </div>
       </div>
     </div>
@@ -318,7 +298,9 @@
       { name:'unigroup-client',         integration:'Unigroup', source:'kong', value:'X-API-Key ••••••2b',  rotated:'2026-04-02',status:'ok' }
     ];
     let creds = MOCK_CREDS.slice();
-    let live = false;   // flipped by initBackend() on success
+    let live = false;        // flipped by initBackend() on success
+    let sourcesState = {};   // {env:{enabled,writable}, n8n:..., kong:...}
+    let auditRows = [];      // populated when live
 
     function normalizeApiItem(it) {
       return {
@@ -334,20 +316,86 @@
     async function initBackend() {
       try {
         const h = await fetch('/api/health').then(r => r.ok ? r.json() : Promise.reject(r.status));
-        const enabledSources = Object.entries(h.sources || {}).filter(([,v]) => v.enabled).map(([k]) => k);
-        const c = await fetch('/api/credentials').then(r => r.ok ? r.json() : Promise.reject(r.status));
-        creds = (c.items || []).map(normalizeApiItem);
+        sourcesState = h.sources || {};
+        const enabledSources = Object.entries(sourcesState).filter(([,v]) => v.enabled).map(([k]) => k);
+        const writables = Object.entries(sourcesState).filter(([,v]) => v.writable).map(([k]) => k);
+        await refreshCreds();
+        await refreshAudit();
         live = true;
         const banner = document.getElementById('status-banner');
         banner.className = 'bg-emerald-50 border-b border-emerald-200 text-emerald-900 text-sm px-4 py-2 text-center';
         document.getElementById('status-banner-text').innerHTML =
-          `<strong>Live.</strong> Backend phase ${h.phase || '?'} — ${enabledSources.length} source(s) connected: ${enabledSources.join(', ')}. ` +
-          `Writes: ${Object.entries(h.sources || {}).filter(([,v]) => v.writable).map(([k])=>k).join(', ') || '<em>read-only</em>'}.`;
-        // re-render whatever view we're on
+          `<strong>Live.</strong> Backend phase ${h.phase || '?'} — ${enabledSources.length} source(s): ${enabledSources.join(', ')}. ` +
+          `Writes: ${writables.join(', ') || '<em>read-only</em>'}.`;
         onHash();
       } catch (e) {
-        // silent fallback to mock (banner already shows wireframe state)
         console.info('admin backend unreachable, using mock:', e);
+      }
+    }
+
+    async function refreshCreds() {
+      const c = await fetch('/api/credentials').then(r => r.ok ? r.json() : Promise.reject(r.status));
+      creds = (c.items || []).map(normalizeApiItem);
+    }
+
+    async function refreshAudit() {
+      try {
+        const r = await fetch('/api/audit?limit=100');
+        if (r.ok) auditRows = (await r.json()).items || [];
+      } catch (_) { auditRows = []; }
+    }
+
+    async function saveCred() {
+      const err  = document.getElementById('cred-error');
+      const btn  = document.getElementById('cred-save');
+      err.classList.add('hidden'); err.textContent = '';
+      const name  = document.getElementById('cred-name').value.trim();
+      const value = document.getElementById('cred-value').value;
+      const note  = document.getElementById('cred-note').value.trim() || null;
+      if (!name || !value) {
+        err.textContent = 'name and value are required';
+        err.classList.remove('hidden'); return;
+      }
+      if (!live || !sourcesState.env || !sourcesState.env.writable) {
+        err.textContent = 'Backend not reachable (wireframe mode). Start it: docker compose --profile admin up -d admin-ui';
+        err.classList.remove('hidden'); return;
+      }
+      btn.disabled = true; btn.textContent = 'Saving…';
+      try {
+        const r = await fetch(`/api/credentials/env/${encodeURIComponent(name)}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ value, note })
+        });
+        if (!r.ok) {
+          const body = await r.json().catch(() => ({detail: r.statusText}));
+          throw new Error(body.detail || r.statusText);
+        }
+        closeCredModal();
+        await refreshCreds();
+        await refreshAudit();
+        renderCreds('all');
+      } catch (e) {
+        err.textContent = String(e.message || e);
+        err.classList.remove('hidden');
+      } finally {
+        btn.disabled = false; btn.textContent = 'Save';
+      }
+    }
+
+    async function deleteCred(name) {
+      if (!live || !sourcesState.env || !sourcesState.env.writable) {
+        alert('Backend not reachable (wireframe mode). Nothing will happen.'); return;
+      }
+      if (!confirm(`Clear ${name}? It will be set to empty in .env and the gateway will fall back to whatever default the compose file defines (often unsafe).\n\nLogged in the audit trail.`)) return;
+      try {
+        const r = await fetch(`/api/credentials/env/${encodeURIComponent(name)}`, { method: 'DELETE' });
+        if (!r.ok) throw new Error((await r.json().catch(()=>({}))).detail || r.statusText);
+        await refreshCreds();
+        await refreshAudit();
+        renderCreds('all');
+      } catch (e) {
+        alert('Delete failed: ' + e.message);
       }
     }
     const integrationDetails = {
@@ -387,6 +435,38 @@
       if (el) el.classList.add('active');
       if (viewId === 'credentials') renderCreds('all');
       if (viewId === 'integrations') renderIntegration(detailKey || 'samsara');
+      if (viewId === 'audit') renderAudit();
+    }
+
+    function renderAudit() {
+      const box = document.getElementById('audit-rows');
+      const rows = live && auditRows.length > 0 ? auditRows : [
+        { ts:'2026-04-19T15:22:00', actor:'admin', action:'update', source:'env',  name:'SAMSARA_API_TOKEN',  integration:'Samsara',  note:'(mock) rotation' },
+        { ts:'2026-04-18T09:03:00', actor:'admin', action:'create', source:'kong', name:'samsara-client',     integration:'Samsara',  note:'(mock)' },
+        { ts:'2026-04-17T16:45:00', actor:'admin', action:'create', source:'n8n',  name:'NetSuite TBA',       integration:'NetSuite', note:'(mock) import' }
+      ];
+      if (!rows.length) {
+        box.innerHTML = '<div class="p-4 text-sm text-slate-500">No audit events yet.</div>';
+        return;
+      }
+      box.innerHTML = rows.map(r => {
+        const ts = (r.ts || '').replace('T', ' ').slice(0, 16);
+        const srcBadge = { env:'bg-slate-100 text-slate-700', n8n:'bg-violet-100 text-violet-700', kong:'bg-blue-100 text-blue-700' }[r.source] || 'bg-slate-100';
+        return `
+          <div class="p-4 flex items-start gap-3">
+            <span class="text-xs text-slate-500 w-36 flex-shrink-0">${ts}</span>
+            <div class="flex-1">
+              <div><strong>${r.actor || 'admin'}</strong>
+                <span class="text-xs ml-1">${r.action}</span>
+                <span class="text-xs px-2 py-0.5 rounded ${srcBadge} ml-1">${r.source}</span>
+                <kbd class="ml-1">${r.name}</kbd>
+                ${r.integration ? `<span class="text-xs text-slate-500 ml-1">(${r.integration})</span>` : ''}
+              </div>
+              ${r.note ? `<div class="text-xs text-slate-500 mt-1">${r.note}</div>` : ''}
+              ${r.client_ip ? `<div class="text-xs text-slate-400 mt-0.5">from ${r.client_ip}</div>` : ''}
+            </div>
+          </div>`;
+      }).join('');
     }
     function goto(viewId, detailKey) {
       window.location.hash = viewId + (detailKey ? '/' + detailKey : '');
@@ -420,8 +500,7 @@
               <td class="px-4 py-2">${status}</td>
               <td class="px-4 py-2 text-right">
                 <button class="text-xs text-slate-600 hover:text-blue-600" onclick="openCredModal('${c.name}')">Edit</button>
-                <button class="text-xs text-slate-600 hover:text-blue-600 ml-2">Rotate</button>
-                <button class="text-xs text-slate-600 hover:text-red-600 ml-2" onclick="confirmDelete('${c.name}')">Delete</button>
+                <button class="text-xs text-slate-600 hover:text-red-600 ml-2" onclick="deleteCred('${c.name}')">Delete</button>
               </td>
             </tr>
           `;
@@ -483,7 +562,26 @@
 
     // --- modal + misc --------------------------------------------------
     function openCredModal(name) {
-      document.getElementById('cred-modal-title').textContent = name ? `Edit ${name}` : 'Add credential';
+      const modalTitle = document.getElementById('cred-modal-title');
+      const nameInput  = document.getElementById('cred-name');
+      const integLabel = document.getElementById('cred-integration');
+      const valueInput = document.getElementById('cred-value');
+      const noteInput  = document.getElementById('cred-note');
+      const err        = document.getElementById('cred-error');
+      err.classList.add('hidden'); err.textContent = '';
+      valueInput.value = ''; noteInput.value = '';
+      if (name) {
+        const row = creds.find(c => c.name === name);
+        modalTitle.textContent = `Edit ${name}`;
+        nameInput.value = name;
+        nameInput.readOnly = true;
+        integLabel.textContent = row ? row.integration : '—';
+      } else {
+        modalTitle.textContent = 'Add credential';
+        nameInput.value = '';
+        nameInput.readOnly = false;
+        integLabel.textContent = '—';
+      }
       document.getElementById('cred-modal').classList.remove('hidden');
       document.getElementById('cred-modal').classList.add('flex');
     }
@@ -491,11 +589,15 @@
       document.getElementById('cred-modal').classList.add('hidden');
       document.getElementById('cred-modal').classList.remove('flex');
     }
-    function confirmDelete(name) {
-      if (confirm(`Delete ${name}? This is logged in the audit trail.\n\n(wireframe: nothing actually happens)`)) {
-        alert('wireframe: would delete + restart affected services');
+
+    // Auto-fill integration label when the user types a name we know about.
+    document.addEventListener('input', (e) => {
+      if (e.target && e.target.id === 'cred-name') {
+        const v = e.target.value.trim();
+        const row = creds.find(c => c.name === v);
+        document.getElementById('cred-integration').textContent = row ? row.integration : '—';
       }
-    }
+    });
 
     // --- init ---------------------------------------------------------
     onHash();

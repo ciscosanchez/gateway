@@ -8,7 +8,11 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY app.py .
+COPY audit.py .
 COPY sources/ ./sources/
+
+# /app/data holds the audit sqlite DB; must be writable by the admin user.
+RUN mkdir -p /app/data && chown -R admin:admin /app/data
 
 USER admin
 EXPOSE 7070

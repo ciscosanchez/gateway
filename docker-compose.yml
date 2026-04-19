@@ -607,10 +607,14 @@ services:
     environment:
       ADMIN_ENV_FILE: /app/env/.env
       ADMIN_STATIC_DIR: /app/static
+      ADMIN_AUDIT_DB:  /app/data/audit.db
     volumes:
-      - ./.env:/app/env/.env:ro
+      # .env mounted RW so phase C+ writes apply. On Linux hosts the file
+      # must be readable by gid 1000 for the admin container user.
+      - ./.env:/app/env/.env:rw
       - ./admin-ui/index.html:/app/static/index.html:ro
       - ./admin-ui/README.md:/app/static/README.md:ro
+      - admin_ui_data:/app/data
     ports:
       # Loopback only. Behind Kong + IP allowlist + OIDC for remote access.
       - "127.0.0.1:7070:7070"
@@ -638,6 +642,7 @@ volumes:
   alertmanager_data:
   grafana_data:
   loki_data:
+  admin_ui_data:
 
 networks:
   gateway-network:

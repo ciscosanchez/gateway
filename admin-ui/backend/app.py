@@ -1,13 +1,19 @@
 """Gateway Admin UI backend.
 
-Phase A (this file): read-only.
- - Serves the static HTML at /
- - Lists env-var-backed credentials from the gateway's .env
- - No writes, no audit log, no n8n/Kong API integration yet.
+Phase A: read-only env source.
+Phase B: frontend wires up to /api/credentials.
+Phase C (this commit): writes to .env + append-only SQLite audit log.
+Phases D/E: n8n + Kong sources with their own write paths.
 
-Phase B will wire the frontend to /api/credentials.
-Phase C introduces env writes, audit log, and rotate-with-restart.
-Phases D/E add n8n and Kong sources.
+Safety rails:
+- Plaintext values are never echoed back in responses. The client sees only
+  value_masked (last 4 chars for secrets). Audit rows store sha256 hashes
+  of before/after values, not the values themselves.
+- Writes are atomic (rename into place). A failed write leaves the old
+  file intact.
+- Writes to unknown variable names are rejected (see REGISTRY in
+  sources/env.py). Use the code to add a new var; the UI won't silently
+  pollute .env.
 """
 from __future__ import annotations
 
@@ -15,17 +21,28 @@ import os
 from pathlib import Path
 from typing import Optional
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel, Field
 
-from sources.env import list_env_credentials, count_by_status
+import audit
+from sources.env import (
+    EnvWriteError,
+    UnknownCredential,
+    count_by_status,
+    delete_env_credential,
+    list_env_credentials,
+    set_env_credential,
+)
 
 app = FastAPI(
     title="Gateway Admin",
-    version="0.1.0-phase-a",
+    version="0.2.0-phase-c",
     description="Unified credential / integration management for the gateway stack.",
 )
+
+audit.init_schema()
 
 STATIC_DIR = Path(os.getenv("ADMIN_STATIC_DIR", "/app/static"))
 
@@ -38,9 +55,9 @@ STATIC_DIR = Path(os.getenv("ADMIN_STATIC_DIR", "/app/static"))
 def health() -> dict:
     return {
         "status": "ok",
-        "phase":  "A",
+        "phase":  "C",
         "sources": {
-            "env":  {"enabled": True,  "writable": False},
+            "env":  {"enabled": True,  "writable": True},
             "n8n":  {"enabled": False, "writable": False},
             "kong": {"enabled": False, "writable": False},
         },
@@ -88,6 +105,74 @@ def get_credential(name: str) -> dict:
         if item["name"] == name:
             return item
     raise HTTPException(status_code=404, detail=f"credential '{name}' not found")
+
+
+class UpsertReq(BaseModel):
+    value: str = Field(..., description="New plaintext value. Never echoed back.")
+    note:  Optional[str] = Field(default=None, description="Free-form audit note")
+
+
+def _client_ip(req: Request) -> str:
+    return req.client.host if req.client else "unknown"
+
+
+@app.put("/api/credentials/env/{name}", tags=["credentials"])
+def upsert_env_credential(name: str, body: UpsertReq, req: Request) -> dict:
+    try:
+        saved = set_env_credential(name, body.value)
+    except UnknownCredential as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except EnvWriteError as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    before = saved.pop("_before_hash", None)
+    after  = saved.pop("_after_hash", None)
+    audit.record(
+        action="create" if before is None else "update",
+        source="env",
+        name=name,
+        integration=saved.get("integration"),
+        before_hash=before,
+        after_hash=after,
+        note=body.note,
+        client_ip=_client_ip(req),
+    )
+    return saved
+
+
+@app.delete("/api/credentials/env/{name}", tags=["credentials"])
+def clear_env_credential(name: str, req: Request, note: Optional[str] = None) -> dict:
+    try:
+        cleared = delete_env_credential(name)
+    except UnknownCredential as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except EnvWriteError as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    before = cleared.pop("_before_hash", None)
+    cleared.pop("_after_hash", None)
+    audit.record(
+        action="delete",
+        source="env",
+        name=name,
+        integration=cleared.get("integration"),
+        before_hash=before,
+        after_hash=None,
+        note=note,
+        client_ip=_client_ip(req),
+    )
+    return cleared
+
+
+# ---------------------------------------------------------------------------
+# Audit log
+# ---------------------------------------------------------------------------
+
+@app.get("/api/audit", tags=["audit"])
+def list_audit(
+    limit: int = Query(default=50, ge=1, le=500),
+    name:  Optional[str] = Query(default=None),
+) -> dict:
+    rows = audit.recent(limit=limit, name=name)
+    return {"items": rows, "count": len(rows)}
 
 
 # ---------------------------------------------------------------------------
