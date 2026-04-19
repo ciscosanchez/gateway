@@ -22,7 +22,8 @@ RUN mkdir -p /app/data
 # beyond loopback, add OIDC / a separate privileged helper process that the
 # non-root web process talks to via a narrow IPC.
 # USER admin   # re-enable once we split privileges properly
-# trivy:ignore:AVD-DS-0002 root required for docker.sock + .env writes; loopback-only
+# Root is required for docker.sock + .env writes; service is profile-gated
+# and loopback-only. Trivy DS-0002 is accepted in /.trivyignore with rationale.
 EXPOSE 7070
 
 HEALTHCHECK --interval=15s --timeout=5s --start-period=10s --retries=5 \

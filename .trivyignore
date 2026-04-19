@@ -14,6 +14,18 @@
 # LAST REVIEWED: 2026-04-19 (initial list from CI run 24614331823)
 # --------------------------------------------------------------------------
 
+# --- Dockerfile misconfigurations ---
+# Applies repo-wide; if we ever add another Dockerfile that SHOULD be non-
+# root, remove this line and scope the exception via .trivyignore.yaml.
+# Currently relevant only to admin-ui/backend/Dockerfile which intentionally
+# runs as root to:
+#   (a) write to the bind-mounted .env regardless of host file ownership
+#   (b) speak to /var/run/docker.sock for the restart endpoint
+# The admin-ui service is profile-gated (--profile admin) and binds only to
+# 127.0.0.1:7070, so the blast radius of rootful execution is a single-host
+# operator who's already chosen to enable it.
+AVD-DS-0002
+
 # --- Go stdlib / toolchain (present in every Go-based image) ---
 # Loki, Promtail, Prometheus, Alertmanager, Grafana, Redpanda, etc. ship
 # statically-linked Go binaries whose stdlib version is fixed at image
