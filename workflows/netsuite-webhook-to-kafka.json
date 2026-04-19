@@ -1,0 +1,142 @@
+{
+  "name": "NetSuite Webhook to Kafka",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "netsuite",
+        "responseMode": "responseNode",
+        "options": {
+          "rawBody": false
+        }
+      },
+      "name": "NetSuite Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [240, 320],
+      "webhookId": "netsuite-webhook"
+    },
+    {
+      "parameters": {
+        "functionCode": "// Validate + normalize the payload posted by the NetSuite User Event\n// script (see docs/netsuite-integration.md). Kong has already enforced\n// key-auth and stripped the X-API-Key header (hide_credentials=true), so\n// we do NOT re-validate the key here. We DO validate the payload shape so\n// a malformed push doesn't pollute Kafka.\nconst body = $input.item.json;\n\nconst required = ['source', 'event_type', 'record_type', 'id'];\nfor (const f of required) {\n  if (!body[f]) {\n    const err = new Error(`missing required field: ${f}`);\n    err.statusCode = 400;\n    throw err;\n  }\n}\nif (body.source !== 'netsuite') {\n  const err = new Error(`unexpected source: ${body.source}`);\n  err.statusCode = 400;\n  throw err;\n}\n\n// Route by record type. Sales orders flow into the main orders topic so\n// downstream consumers (WMS, Unigroup booking, dispatch) can subscribe\n// without caring about the origin system. Inventory-adjacent types share\n// the inventory topic. Everything else lands on netsuite-updates as a\n// generic change feed.\nconst TYPE_ROUTING = {\n  salesorder:          'orders',\n  inventoryadjustment: 'inventory',\n  itemreceipt:         'inventory',\n  itemfulfillment:     'inventory'\n};\nconst topic = TYPE_ROUTING[body.record_type] || 'netsuite-updates';\n\nconst event = {\n  source:      'netsuite',\n  event_type:  body.event_type,       // 'create' | 'edit'\n  record_type: body.record_type,\n  id:          String(body.id),\n  tran_id:     body.tran_id || null,\n  entity:      body.entity || null,\n  total:       body.total || null,\n  status:      body.status || null,\n  timestamp:   body.timestamp || new Date().toISOString(),\n  received_at: new Date().toISOString(),\n  correlation_id: $('NetSuite Webhook').first().json.headers?.['x-request-id'] || $execution.id,\n  // Partition key - keep ordering per-record across edits\n  _key: `netsuite:${body.record_type}:${body.id}`,\n  _topic: topic\n};\n\nreturn { json: event };"
+      },
+      "name": "Validate + Route",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [460, 320]
+    },
+    {
+      "parameters": {
+        "operation": "sendMessage",
+        "topic": "={{ $json._topic }}",
+        "sendInputData": false,
+        "jsonMessage": "={{ JSON.stringify($json) }}",
+        "options": {
+          "acks": -1,
+          "compression": "gzip",
+          "maxInFlightRequests": 5,
+          "headers": {
+            "content-type":   "application/json",
+            "schema-version": "1",
+            "source":         "netsuite"
+          },
+          "useSchemaRegistry": false
+        }
+      },
+      "name": "Produce to Kafka",
+      "type": "n8n-nodes-base.kafka",
+      "typeVersion": 1,
+      "position": [680, 320],
+      "credentials": {
+        "kafka": {
+          "id": "redpanda",
+          "name": "Redpanda (internal)"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { accepted: true, record_type: $json.record_type, id: $json.id, topic: $json._topic, correlation_id: $json.correlation_id } }}",
+        "options": {
+          "responseCode": 202
+        }
+      },
+      "name": "Success Response",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [900, 320]
+    },
+    {
+      "parameters": {
+        "functionCode": "// Decide whether this was a client error (400 - bad payload) or a server\n// error (500 - Kafka unreachable etc.). statusCode set by Validate + Route\n// survives onto the error item; anything without it is 500.\nconst err = $input.item.json;\nconst status = err.statusCode || err.status || 500;\nconst isClient = status >= 400 && status < 500;\n\nreturn {\n  json: {\n    workflow: 'netsuite-webhook-to-kafka',\n    error:    err.message || err.error || 'unknown',\n    status,\n    is_client_error: isClient,\n    original: err,\n    timestamp: new Date().toISOString()\n  }\n};"
+      },
+      "name": "Build DLQ Record",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [680, 540]
+    },
+    {
+      "parameters": {
+        "operation": "sendMessage",
+        "topic": "errors-dlq",
+        "sendInputData": false,
+        "jsonMessage": "={{ JSON.stringify($json) }}",
+        "options": {
+          "acks": -1,
+          "compression": "gzip"
+        }
+      },
+      "name": "Send to DLQ",
+      "type": "n8n-nodes-base.kafka",
+      "typeVersion": 1,
+      "position": [900, 540],
+      "credentials": {
+        "kafka": {
+          "id": "redpanda",
+          "name": "Redpanda (internal)"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { accepted: false, error: $json.error, status: $json.status } }}",
+        "options": {
+          "responseCode": "={{ $json.status }}"
+        }
+      },
+      "name": "Error Response",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [1120, 540]
+    }
+  ],
+  "connections": {
+    "NetSuite Webhook": {
+      "main": [[{ "node": "Validate + Route", "type": "main", "index": 0 }]]
+    },
+    "Validate + Route": {
+      "main":  [[{ "node": "Produce to Kafka",  "type": "main", "index": 0 }]],
+      "error": [[{ "node": "Build DLQ Record",  "type": "main", "index": 0 }]]
+    },
+    "Produce to Kafka": {
+      "main":  [[{ "node": "Success Response", "type": "main", "index": 0 }]],
+      "error": [[{ "node": "Build DLQ Record", "type": "main", "index": 0 }]]
+    },
+    "Build DLQ Record": {
+      "main": [[{ "node": "Send to DLQ", "type": "main", "index": 0 }]]
+    },
+    "Send to DLQ": {
+      "main": [[{ "node": "Error Response", "type": "main", "index": 0 }]]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveDataErrorExecution": "all",
+    "saveDataSuccessExecution": "none",
+    "saveExecutionProgress": false,
+    "timezone": "America/Los_Angeles",
+    "errorWorkflow": ""
+  }
+}
