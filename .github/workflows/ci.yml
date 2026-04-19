@@ -113,6 +113,9 @@ jobs:
           ignore-unfixed: true
 
       - name: Trivy image scans - CRITICAL fixable only, blocking
+        # Accepted CVEs live in .trivyignore; the file explains why each was
+        # accepted and the quarterly review cadence. New CRITICAL findings
+        # not in the ignore list fail the pipeline.
         run: |
           set -eu
           failed=""
@@ -129,14 +132,17 @@ jobs:
             grafana/promtail:2.9.6
           do
             echo "=== $image ==="
-            if ! docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
+            if ! docker run --rm \
+                 -v /var/run/docker.sock:/var/run/docker.sock \
+                 -v "$PWD/.trivyignore:/.trivyignore:ro" \
                  aquasec/trivy:latest image --quiet --no-progress \
+                 --ignorefile /.trivyignore \
                  --severity CRITICAL --ignore-unfixed --exit-code 1 "$image"; then
               failed="${failed} ${image}"
             fi
           done
           if [ -n "${failed}" ]; then
-            echo "::error::Images with fixable CRITICAL CVEs:${failed}"
+            echo "::error::Images with fixable CRITICAL CVEs not in .trivyignore:${failed}"
             exit 1
           fi
 
