@@ -55,6 +55,21 @@ else
   err "kong/kong.yml missing"
 fi
 
+# --- Unigroup Converge ---
+if [ -f .env ]; then
+  if grep -qE "^EDI_(SENDER|RECEIVER)_ID=" .env; then
+    warn ".env still has legacy EDI_SENDER_ID/EDI_RECEIVER_ID - Unigroup Converge uses OAuth2, not EDI. Migrate to UNIGROUP_CLIENT_ID/SECRET."
+  fi
+  if grep -qE "^UNIGROUP_CLIENT_ID=(CHANGE_ME|)$" .env; then
+    warn "UNIGROUP_CLIENT_ID not set - Unigroup outbound calls will fail until creds land"
+  fi
+  case "$(grep -E '^UNIGROUP_ENV=' .env | cut -d= -f2)" in
+    staging|production) ok "UNIGROUP_ENV valid" ;;
+    "") warn "UNIGROUP_ENV unset (defaulting to staging)" ;;
+    *) err "UNIGROUP_ENV must be 'staging' or 'production'" ;;
+  esac
+fi
+
 # --- Alertmanager rendering ---
 if [ -f config/alertmanager/alertmanager.yml.tpl ] && [ -f config/alertmanager/entrypoint.sh ]; then
   ok "alertmanager template + entrypoint present"

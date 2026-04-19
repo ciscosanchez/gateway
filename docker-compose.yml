@@ -328,10 +328,21 @@ services:
       EXECUTIONS_DATA_PRUNE: "true"
       EXECUTIONS_DATA_MAX_AGE: "336"          # hours (14 days)
       EXECUTIONS_DATA_PRUNE_TIMEOUT: "3600"
-      # Webhook/Samsara secrets visible to function nodes
+      # Integration secrets visible to function nodes
       SAMSARA_API_TOKEN: ${SAMSARA_API_TOKEN}
       SAMSARA_WEBHOOK_SECRET: ${SAMSARA_WEBHOOK_SECRET}
       NETSUITE_ACCOUNT_ID: ${NETSUITE_ACCOUNT_ID}
+      # Unigroup Converge (OAuth2 client credentials + GraphQL)
+      UNIGROUP_ENV: ${UNIGROUP_ENV:-staging}
+      UNIGROUP_CLIENT_ID: ${UNIGROUP_CLIENT_ID:-}
+      UNIGROUP_CLIENT_SECRET: ${UNIGROUP_CLIENT_SECRET:-}
+      UNIGROUP_OAUTH_SCOPE: ${UNIGROUP_OAUTH_SCOPE:-}
+      UNIGROUP_TOKEN_URL_STAGING: ${UNIGROUP_TOKEN_URL_STAGING:-https://auth.cloud1.unigroup.com/auth/realms/stgunigroup/protocol/openid-connect/token}
+      UNIGROUP_TOKEN_URL_PROD: ${UNIGROUP_TOKEN_URL_PROD:-https://auth.cloud.unigroup.com/auth/realms/unigroup/protocol/openid-connect/token}
+      UNIGROUP_GRAPHQL_URL_STAGING: ${UNIGROUP_GRAPHQL_URL_STAGING:-https://api.cloud1.unigroup.com/graphql}
+      UNIGROUP_GRAPHQL_URL_PROD: ${UNIGROUP_GRAPHQL_URL_PROD:-https://api.unigroup.com/graphql}
+      UNIGROUP_DOCS_URL_STAGING: ${UNIGROUP_DOCS_URL_STAGING:-https://api.cloud1.unigroup.com/documents}
+      UNIGROUP_DOCS_URL_PROD: ${UNIGROUP_DOCS_URL_PROD:-https://api.unigroup.com/documents}
     volumes:
       - n8n_data:/home/node/.n8n
     expose:
@@ -381,6 +392,16 @@ services:
       SAMSARA_API_TOKEN: ${SAMSARA_API_TOKEN}
       SAMSARA_WEBHOOK_SECRET: ${SAMSARA_WEBHOOK_SECRET}
       NETSUITE_ACCOUNT_ID: ${NETSUITE_ACCOUNT_ID}
+      UNIGROUP_ENV: ${UNIGROUP_ENV:-staging}
+      UNIGROUP_CLIENT_ID: ${UNIGROUP_CLIENT_ID:-}
+      UNIGROUP_CLIENT_SECRET: ${UNIGROUP_CLIENT_SECRET:-}
+      UNIGROUP_OAUTH_SCOPE: ${UNIGROUP_OAUTH_SCOPE:-}
+      UNIGROUP_TOKEN_URL_STAGING: ${UNIGROUP_TOKEN_URL_STAGING:-https://auth.cloud1.unigroup.com/auth/realms/stgunigroup/protocol/openid-connect/token}
+      UNIGROUP_TOKEN_URL_PROD: ${UNIGROUP_TOKEN_URL_PROD:-https://auth.cloud.unigroup.com/auth/realms/unigroup/protocol/openid-connect/token}
+      UNIGROUP_GRAPHQL_URL_STAGING: ${UNIGROUP_GRAPHQL_URL_STAGING:-https://api.cloud1.unigroup.com/graphql}
+      UNIGROUP_GRAPHQL_URL_PROD: ${UNIGROUP_GRAPHQL_URL_PROD:-https://api.unigroup.com/graphql}
+      UNIGROUP_DOCS_URL_STAGING: ${UNIGROUP_DOCS_URL_STAGING:-https://api.cloud1.unigroup.com/documents}
+      UNIGROUP_DOCS_URL_PROD: ${UNIGROUP_DOCS_URL_PROD:-https://api.unigroup.com/documents}
     depends_on:
       postgres: { condition: service_healthy }
       redis:    { condition: service_healthy }
