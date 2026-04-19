@@ -615,6 +615,11 @@ services:
       N8N_BASIC_AUTH_USER: ${N8N_BASIC_AUTH_USER}
       N8N_BASIC_AUTH_PASSWORD: ${N8N_BASIC_AUTH_PASSWORD}
       N8N_API_KEY: ${N8N_API_KEY:-}
+      # Kong source talks to the admin API over the internal docker network.
+      # DB-less means writes are not supported via individual endpoints in
+      # phase E1 (reads only). Phase E2 will edit kong/kong.yml and reload
+      # Kong via POST /config.
+      KONG_ADMIN_URL: http://kong:8001
     volumes:
       # .env mounted RW so writes apply on save.
       - ./.env:/app/env/.env:rw
