@@ -51,9 +51,9 @@ def init_schema() -> None:
               id           INTEGER PRIMARY KEY AUTOINCREMENT,
               ts           TEXT    NOT NULL,
               actor        TEXT    NOT NULL,
-              action       TEXT    NOT NULL,     -- create | update | delete | rotate
-              source       TEXT    NOT NULL,     -- env | n8n | kong
-              name         TEXT    NOT NULL,     -- credential identifier
+              action       TEXT    NOT NULL,     -- create | update | delete | rotate | restart
+              source       TEXT    NOT NULL,     -- env | n8n | kong | docker
+              name         TEXT    NOT NULL,     -- credential id OR service name
               integration  TEXT,                 -- Samsara, NetSuite, ...
               before_hash  TEXT,                 -- sha256 of old value (never plaintext)
               after_hash   TEXT,                 -- sha256 of new value
@@ -62,6 +62,16 @@ def init_schema() -> None:
             );
             CREATE INDEX IF NOT EXISTS idx_audit_ts ON audit_events(ts DESC);
             CREATE INDEX IF NOT EXISTS idx_audit_name ON audit_events(name);
+
+            -- Tracks which compose services are waiting on a restart because
+            -- an env var they consume was changed. Cleared when that service
+            -- is restarted through the admin UI.
+            CREATE TABLE IF NOT EXISTS pending_restarts (
+              service          TEXT PRIMARY KEY,
+              first_change_ts  TEXT NOT NULL,
+              last_change_ts   TEXT NOT NULL,
+              change_count     INTEGER NOT NULL DEFAULT 1
+            );
             """
         )
 
@@ -90,6 +100,43 @@ def record(
              before_hash, after_hash, note, client_ip),
         )
         return int(cur.lastrowid or 0)
+
+
+def mark_restart_pending(services: list[str]) -> None:
+    """Record that the named compose services have un-applied env changes."""
+    if not services:
+        return
+    now = _now_iso()
+    with _conn() as c:
+        for svc in services:
+            c.execute(
+                """
+                INSERT INTO pending_restarts (service, first_change_ts, last_change_ts, change_count)
+                VALUES (?, ?, ?, 1)
+                ON CONFLICT(service) DO UPDATE SET
+                  last_change_ts = excluded.last_change_ts,
+                  change_count   = change_count + 1
+                """,
+                (svc, now, now),
+            )
+
+
+def clear_restart_pending(services: list[str]) -> None:
+    if not services:
+        return
+    with _conn() as c:
+        c.executemany(
+            "DELETE FROM pending_restarts WHERE service = ?",
+            [(s,) for s in services],
+        )
+
+
+def pending_restarts() -> list[dict]:
+    with _conn() as c:
+        rows = c.execute(
+            "SELECT service, first_change_ts, last_change_ts, change_count FROM pending_restarts ORDER BY service"
+        ).fetchall()
+        return [dict(r) for r in rows]
 
 
 def recent(limit: int = 50, name: str | None = None) -> list[dict]:

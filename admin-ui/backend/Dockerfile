@@ -11,10 +11,17 @@ COPY app.py .
 COPY audit.py .
 COPY sources/ ./sources/
 
-# /app/data holds the audit sqlite DB; must be writable by the admin user.
-RUN mkdir -p /app/data && chown -R admin:admin /app/data
+RUN mkdir -p /app/data
 
-USER admin
+# NOTE: this container intentionally runs as root so it can:
+#   (a) write to the bind-mounted .env regardless of host file ownership
+#   (b) speak to /var/run/docker.sock for the restart endpoint
+# This is a significant privilege. It's justified only because the service
+# is profile-gated (only starts with --profile admin), loopback-only
+# (127.0.0.1:7070), and mints no outbound sessions. If you expose this
+# beyond loopback, add OIDC / a separate privileged helper process that the
+# non-root web process talks to via a narrow IPC.
+# USER admin   # re-enable once we split privileges properly
 EXPOSE 7070
 
 HEALTHCHECK --interval=15s --timeout=5s --start-period=10s --retries=5 \

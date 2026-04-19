@@ -609,12 +609,14 @@ services:
       ADMIN_STATIC_DIR: /app/static
       ADMIN_AUDIT_DB:  /app/data/audit.db
     volumes:
-      # .env mounted RW so phase C+ writes apply. On Linux hosts the file
-      # must be readable by gid 1000 for the admin container user.
+      # .env mounted RW so writes apply on save.
       - ./.env:/app/env/.env:rw
       - ./admin-ui/index.html:/app/static/index.html:ro
       - ./admin-ui/README.md:/app/static/README.md:ro
       - admin_ui_data:/app/data
+      # docker.sock mount powers the restart endpoint. This is effectively
+      # root on the host - only enable with the admin profile.
+      - /var/run/docker.sock:/var/run/docker.sock
     ports:
       # Loopback only. Behind Kong + IP allowlist + OIDC for remote access.
       - "127.0.0.1:7070:7070"

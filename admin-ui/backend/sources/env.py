@@ -25,40 +25,50 @@ from dotenv import dotenv_values
 
 ENV_FILE = Path(os.getenv("ADMIN_ENV_FILE", "/app/env/.env"))
 
+# services is the compose-service list that consumes the variable; writing
+# it marks those services as needing a restart. Keep this conservative: it's
+# cheaper to restart one extra service than to miss one.
+N8N = ["n8n", "n8n-worker"]
+
 REGISTRY: dict[str, dict] = {
     # --- Samsara ---
-    "SAMSARA_API_TOKEN":          {"integration": "Samsara",  "kind": "secret"},
-    "SAMSARA_WEBHOOK_SECRET":     {"integration": "Samsara",  "kind": "secret"},
+    "SAMSARA_API_TOKEN":          {"integration": "Samsara",  "kind": "secret", "services": N8N},
+    "SAMSARA_WEBHOOK_SECRET":     {"integration": "Samsara",  "kind": "secret", "services": N8N + ["kong"]},
 
     # --- NetSuite ---
-    "NETSUITE_ACCOUNT_ID":        {"integration": "NetSuite", "kind": "identifier"},
-    "NETSUITE_CONSUMER_KEY":      {"integration": "NetSuite", "kind": "secret"},
-    "NETSUITE_CONSUMER_SECRET":   {"integration": "NetSuite", "kind": "secret"},
-    "NETSUITE_TOKEN_ID":          {"integration": "NetSuite", "kind": "secret"},
-    "NETSUITE_TOKEN_SECRET":      {"integration": "NetSuite", "kind": "secret"},
+    "NETSUITE_ACCOUNT_ID":        {"integration": "NetSuite", "kind": "identifier", "services": N8N},
+    "NETSUITE_CONSUMER_KEY":      {"integration": "NetSuite", "kind": "secret",     "services": N8N},
+    "NETSUITE_CONSUMER_SECRET":   {"integration": "NetSuite", "kind": "secret",     "services": N8N},
+    "NETSUITE_TOKEN_ID":          {"integration": "NetSuite", "kind": "secret",     "services": N8N},
+    "NETSUITE_TOKEN_SECRET":      {"integration": "NetSuite", "kind": "secret",     "services": N8N},
 
     # --- Unigroup Converge ---
-    "UNIGROUP_ENV":               {"integration": "Unigroup", "kind": "config"},
-    "UNIGROUP_CLIENT_ID":         {"integration": "Unigroup", "kind": "secret"},
-    "UNIGROUP_CLIENT_SECRET":     {"integration": "Unigroup", "kind": "secret"},
-    "UNIGROUP_OAUTH_SCOPE":       {"integration": "Unigroup", "kind": "config"},
+    "UNIGROUP_ENV":               {"integration": "Unigroup", "kind": "config", "services": N8N},
+    "UNIGROUP_CLIENT_ID":         {"integration": "Unigroup", "kind": "secret", "services": N8N},
+    "UNIGROUP_CLIENT_SECRET":     {"integration": "Unigroup", "kind": "secret", "services": N8N},
+    "UNIGROUP_OAUTH_SCOPE":       {"integration": "Unigroup", "kind": "config", "services": N8N},
 
     # --- WMS ---
-    "WMS_API_KEY":                {"integration": "WMS",      "kind": "secret"},
-    "WMS_API_URL":                {"integration": "WMS",      "kind": "config"},
+    "WMS_API_KEY":                {"integration": "WMS",      "kind": "secret", "services": N8N},
+    "WMS_API_URL":                {"integration": "WMS",      "kind": "config", "services": N8N},
 
-    # --- Infrastructure (still secrets, surfaced for rotation) ---
-    "POSTGRES_PASSWORD":          {"integration": "Infra",    "kind": "secret"},
-    "REDIS_PASSWORD":             {"integration": "Infra",    "kind": "secret"},
-    "N8N_BASIC_AUTH_PASSWORD":    {"integration": "Infra",    "kind": "secret"},
-    "N8N_ENCRYPTION_KEY":         {"integration": "Infra",    "kind": "secret"},
-    "GF_SECURITY_ADMIN_PASSWORD": {"integration": "Infra",    "kind": "secret"},
+    # --- Infrastructure ---
+    "POSTGRES_PASSWORD":          {"integration": "Infra", "kind": "secret", "services": ["postgres"] + N8N + ["postgres-exporter"]},
+    "REDIS_PASSWORD":             {"integration": "Infra", "kind": "secret", "services": ["redis", "kong"] + N8N + ["redis-exporter"]},
+    "N8N_BASIC_AUTH_PASSWORD":    {"integration": "Infra", "kind": "secret", "services": N8N},
+    "N8N_ENCRYPTION_KEY":         {"integration": "Infra", "kind": "secret", "services": N8N},
+    "GF_SECURITY_ADMIN_PASSWORD": {"integration": "Infra", "kind": "secret", "services": ["grafana"]},
 
     # --- Alerting / backup ---
-    "ALERTMANAGER_SLACK_WEBHOOK": {"integration": "Alerting", "kind": "secret"},
-    "ALERTMANAGER_PAGERDUTY_KEY": {"integration": "Alerting", "kind": "secret"},
-    "BACKUP_AGE_RECIPIENT":       {"integration": "Backup",   "kind": "config"},
+    "ALERTMANAGER_SLACK_WEBHOOK": {"integration": "Alerting", "kind": "secret", "services": ["alertmanager"]},
+    "ALERTMANAGER_PAGERDUTY_KEY": {"integration": "Alerting", "kind": "secret", "services": ["alertmanager"]},
+    "BACKUP_AGE_RECIPIENT":       {"integration": "Backup",   "kind": "config", "services": []},
 }
+
+
+def services_for(name: str) -> list[str]:
+    meta = REGISTRY.get(name)
+    return list(meta.get("services", [])) if meta else []
 
 PLACEHOLDER_PREFIXES = ("CHANGE_ME", "REPLACE_ME", "REPLACE-ME")
 

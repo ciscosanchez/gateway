@@ -27,12 +27,14 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 import audit
+import services as svc_mod
 from sources.env import (
     EnvWriteError,
     UnknownCredential,
     count_by_status,
     delete_env_credential,
     list_env_credentials,
+    services_for,
     set_env_credential,
 )
 
@@ -53,6 +55,13 @@ STATIC_DIR = Path(os.getenv("ADMIN_STATIC_DIR", "/app/static"))
 
 @app.get("/api/health", tags=["meta"])
 def health() -> dict:
+    # Check whether docker daemon is reachable; restart endpoint needs it.
+    docker_ok = False
+    try:
+        svc_mod.client().ping()
+        docker_ok = True
+    except Exception:
+        pass
     return {
         "status": "ok",
         "phase":  "C",
@@ -61,6 +70,7 @@ def health() -> dict:
             "n8n":  {"enabled": False, "writable": False},
             "kong": {"enabled": False, "writable": False},
         },
+        "restart": {"enabled": docker_ok},
     }
 
 
@@ -136,6 +146,7 @@ def upsert_env_credential(name: str, body: UpsertReq, req: Request) -> dict:
         note=body.note,
         client_ip=_client_ip(req),
     )
+    audit.mark_restart_pending(services_for(name))
     return saved
 
 
@@ -159,7 +170,45 @@ def clear_env_credential(name: str, req: Request, note: Optional[str] = None) ->
         note=note,
         client_ip=_client_ip(req),
     )
+    audit.mark_restart_pending(services_for(name))
     return cleared
+
+
+# ---------------------------------------------------------------------------
+# Service restart
+# ---------------------------------------------------------------------------
+
+class RestartReq(BaseModel):
+    services: list[str] = Field(..., description="compose service names to restart")
+
+
+@app.get("/api/services/pending", tags=["services"])
+def pending_restarts() -> dict:
+    rows = audit.pending_restarts()
+    return {"items": rows, "count": len(rows)}
+
+
+@app.post("/api/services/restart", tags=["services"])
+def restart_services(body: RestartReq, req: Request) -> dict:
+    if not body.services:
+        raise HTTPException(status_code=400, detail="no services specified")
+    try:
+        results = svc_mod.restart(body.services)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"docker daemon unreachable: {e}")
+    # Mark succeeded services as no-longer-pending; leave failures alone so
+    # the UI keeps prompting.
+    succeeded = sorted({r["service"] for r in results if r.get("status") == "restarted"})
+    audit.clear_restart_pending(succeeded)
+    for s in succeeded:
+        audit.record(
+            action="restart",
+            source="docker",
+            name=s,
+            integration=None,
+            client_ip=_client_ip(req),
+        )
+    return {"results": results, "cleared": succeeded}
 
 
 # ---------------------------------------------------------------------------
