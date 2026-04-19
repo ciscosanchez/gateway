@@ -608,6 +608,7 @@ services:
       ADMIN_ENV_FILE: /app/env/.env
       ADMIN_STATIC_DIR: /app/static
       ADMIN_AUDIT_DB:  /app/data/audit.db
+      KONG_DECLARATIVE_FILE: /app/kong/kong.yml
       # n8n source reads credentials metadata via the internal REST API
       # (basic auth) or public API (if N8N_API_KEY is set). Values are
       # never returned by n8n, so this is safe read-only.
@@ -623,6 +624,9 @@ services:
     volumes:
       # .env mounted RW so writes apply on save.
       - ./.env:/app/env/.env:rw
+      # kong.yml mounted RW so phase E2 writes can atomically replace it.
+      # Kong also mounts this file (:ro) - both containers see the same bytes.
+      - ./kong/kong.yml:/app/kong/kong.yml:rw
       - ./admin-ui/index.html:/app/static/index.html:ro
       - ./admin-ui/README.md:/app/static/README.md:ro
       - admin_ui_data:/app/data

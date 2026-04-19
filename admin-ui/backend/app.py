@@ -38,7 +38,14 @@ from sources.env import (
     set_env_credential,
 )
 from sources.n8n_api  import is_reachable as n8n_reachable,  list_n8n_credentials
-from sources.kong_api import is_reachable as kong_reachable, list_kong_credentials
+from sources.kong_api import (
+    KongWriteError,
+    UnknownKongConsumer,
+    delete_kong_key,
+    is_reachable as kong_reachable,
+    list_kong_credentials,
+    set_kong_key,
+)
 
 app = FastAPI(
     title="Gateway Admin",
@@ -65,11 +72,11 @@ def health() -> dict:
         pass
     return {
         "status": "ok",
-        "phase":  "E1",
+        "phase":  "E2",
         "sources": {
             "env":  {"enabled": True,              "writable": True},
             "n8n":  {"enabled": n8n_reachable(),  "writable": False},
-            "kong": {"enabled": kong_reachable(), "writable": False},
+            "kong": {"enabled": kong_reachable(), "writable": kong_reachable()},
         },
         "restart": {"enabled": docker_ok},
     }
@@ -167,6 +174,56 @@ def clear_env_credential(name: str, req: Request, note: Optional[str] = None) ->
         client_ip=_client_ip(req),
     )
     audit.mark_restart_pending(services_for(name))
+    return cleared
+
+
+# ---------------------------------------------------------------------------
+# Kong credentials (DB-less: edit kong.yml + hot-reload via POST /config)
+# ---------------------------------------------------------------------------
+
+@app.put("/api/credentials/kong/{consumer}", tags=["credentials"])
+def upsert_kong_credential(consumer: str, body: UpsertReq, req: Request) -> dict:
+    try:
+        saved = set_kong_key(consumer, body.value)
+    except UnknownKongConsumer as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except KongWriteError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    before = saved.pop("_before_hash", None)
+    after  = saved.pop("_after_hash", None)
+    audit.record(
+        action="create" if before is None else "update",
+        source="kong",
+        name=consumer,
+        integration=saved.get("integration"),
+        before_hash=before,
+        after_hash=after,
+        note=body.note,
+        client_ip=_client_ip(req),
+    )
+    return saved
+
+
+@app.delete("/api/credentials/kong/{consumer}", tags=["credentials"])
+def clear_kong_credential(consumer: str, req: Request, note: Optional[str] = None) -> dict:
+    try:
+        cleared = delete_kong_key(consumer)
+    except UnknownKongConsumer as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except KongWriteError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    before = cleared.pop("_before_hash", None)
+    cleared.pop("_after_hash", None)
+    audit.record(
+        action="delete",
+        source="kong",
+        name=consumer,
+        integration=cleared.get("integration"),
+        before_hash=before,
+        after_hash=None,
+        note=note,
+        client_ip=_client_ip(req),
+    )
     return cleared
 
 

@@ -236,11 +236,11 @@
             </label>
             <label class="border border-slate-300 rounded p-2 text-sm cursor-not-allowed opacity-50">
               <input type="radio" name="cred-source" value="n8n" class="mr-1" disabled /> n8n cred
-              <div class="text-xs text-slate-500 mt-1">Phase D (coming)</div>
+              <div class="text-xs text-slate-500 mt-1">read-only — use n8n UI</div>
             </label>
-            <label class="border border-slate-300 rounded p-2 text-sm cursor-not-allowed opacity-50">
-              <input type="radio" name="cred-source" value="kong" class="mr-1" disabled /> Kong consumer
-              <div class="text-xs text-slate-500 mt-1">Phase E (coming)</div>
+            <label class="border border-slate-300 rounded p-2 text-sm cursor-pointer hover:border-blue-400 has-[:checked]:border-blue-600 has-[:checked]:bg-blue-50">
+              <input type="radio" name="cred-source" value="kong" class="mr-1" /> Kong consumer
+              <div class="text-xs text-slate-500 mt-1">X-API-Key, hot-reload</div>
             </label>
           </div>
         </div>
@@ -412,20 +412,21 @@
       const err  = document.getElementById('cred-error');
       const btn  = document.getElementById('cred-save');
       err.classList.add('hidden'); err.textContent = '';
-      const name  = document.getElementById('cred-name').value.trim();
-      const value = document.getElementById('cred-value').value;
-      const note  = document.getElementById('cred-note').value.trim() || null;
+      const source = document.querySelector('input[name="cred-source"]:checked')?.value || 'env';
+      const name   = document.getElementById('cred-name').value.trim();
+      const value  = document.getElementById('cred-value').value;
+      const note   = document.getElementById('cred-note').value.trim() || null;
       if (!name || !value) {
         err.textContent = 'name and value are required';
         err.classList.remove('hidden'); return;
       }
-      if (!live || !sourcesState.env || !sourcesState.env.writable) {
-        err.textContent = 'Backend not reachable (wireframe mode). Start it: docker compose --profile admin up -d admin-ui';
+      if (!live || !sourcesState[source] || !sourcesState[source].writable) {
+        err.textContent = `${source} source not writable. ` + (live ? '' : 'Start the backend: docker compose --profile admin up -d admin-ui');
         err.classList.remove('hidden'); return;
       }
       btn.disabled = true; btn.textContent = 'Saving…';
       try {
-        const r = await fetch(`/api/credentials/env/${encodeURIComponent(name)}`, {
+        const r = await fetch(`/api/credentials/${source}/${encodeURIComponent(name)}`, {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ value, note })
@@ -447,13 +448,17 @@
       }
     }
 
-    async function deleteCred(name) {
-      if (!live || !sourcesState.env || !sourcesState.env.writable) {
-        alert('Backend not reachable (wireframe mode). Nothing will happen.'); return;
+    async function deleteCred(name, source) {
+      source = source || 'env';
+      if (!live || !sourcesState[source] || !sourcesState[source].writable) {
+        alert(`${source} source not writable (wireframe or not-yet-implemented). Nothing will happen.`); return;
       }
-      if (!confirm(`Clear ${name}? It will be set to empty in .env and the gateway will fall back to whatever default the compose file defines (often unsafe).\n\nLogged in the audit trail.`)) return;
+      const msg = source === 'env'
+        ? `Clear ${name}? It will be set to empty in .env and the gateway will fall back to whatever default the compose file defines (often unsafe).\n\nLogged in the audit trail.`
+        : `Remove the Kong key for ${name}? That consumer will 401 on every request until a new key is set.\n\nLogged in the audit trail.`;
+      if (!confirm(msg)) return;
       try {
-        const r = await fetch(`/api/credentials/env/${encodeURIComponent(name)}`, { method: 'DELETE' });
+        const r = await fetch(`/api/credentials/${source}/${encodeURIComponent(name)}`, { method: 'DELETE' });
         if (!r.ok) throw new Error((await r.json().catch(()=>({}))).detail || r.statusText);
         await refreshCreds();
         await refreshAudit();
@@ -564,8 +569,8 @@
               <td class="px-4 py-2 text-slate-600">${c.rotated}</td>
               <td class="px-4 py-2">${status}</td>
               <td class="px-4 py-2 text-right">
-                <button class="text-xs text-slate-600 hover:text-blue-600" onclick="openCredModal('${c.name}')">Edit</button>
-                <button class="text-xs text-slate-600 hover:text-red-600 ml-2" onclick="deleteCred('${c.name}')">Delete</button>
+                <button class="text-xs text-slate-600 hover:text-blue-600" onclick="openCredModal('${c.name}','${c.source}')">Edit</button>
+                <button class="text-xs text-slate-600 hover:text-red-600 ml-2" onclick="deleteCred('${c.name}','${c.source}')">Delete</button>
               </td>
             </tr>
           `;
@@ -626,7 +631,7 @@
     }
 
     // --- modal + misc --------------------------------------------------
-    function openCredModal(name) {
+    function openCredModal(name, source) {
       const modalTitle = document.getElementById('cred-modal-title');
       const nameInput  = document.getElementById('cred-name');
       const integLabel = document.getElementById('cred-integration');
@@ -636,11 +641,14 @@
       err.classList.add('hidden'); err.textContent = '';
       valueInput.value = ''; noteInput.value = '';
       if (name) {
-        const row = creds.find(c => c.name === name);
+        const row = creds.find(c => c.name === name && (!source || c.source === source));
         modalTitle.textContent = `Edit ${name}`;
         nameInput.value = name;
         nameInput.readOnly = true;
         integLabel.textContent = row ? row.integration : '—';
+        const src = source || (row && row.source) || 'env';
+        const radio = document.querySelector(`input[name="cred-source"][value="${src}"]`);
+        if (radio && !radio.disabled) radio.checked = true;
       } else {
         modalTitle.textContent = 'Add credential';
         nameInput.value = '';
