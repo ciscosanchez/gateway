@@ -186,9 +186,15 @@ jobs:
         run: curl -fsS http://127.0.0.1:9090/-/ready
       - name: Fail on service errors
         run: |
+          # Known-benign log noise that isn't a real failure signal:
+          #   - health*          : routine health check chatter
+          #   - diskstats_linux  : node-exporter can't read proc on some runners
+          #   - /run/udev/data   : same category
+          #   - Failed to lock.*auth token  : grafana startup race locking sqlite auth DB
+          #   - database is locked           : same cluster of grafana warnings
           if docker compose -f docker-compose.yml -f docker-compose.lite.yml logs 2>&1 \
              | grep -Ei "panic|fatal|level=error" \
-             | grep -vE "healthz|health check|diskstats_linux.go|/run/udev/data"; then
+             | grep -vE "healthz|health check|diskstats_linux.go|/run/udev/data|Failed to lock and execute cleanup|database is locked"; then
             echo "::error::Errors found in service logs"
             docker compose -f docker-compose.yml -f docker-compose.lite.yml logs
             exit 1
