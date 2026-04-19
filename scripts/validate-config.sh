@@ -24,8 +24,8 @@ if [ ! -f .env ]; then
   warn ".env missing - using .env.example"
 else
   ok ".env present"
-  if grep -qE "CHANGE_ME|REPLACE_ME|your_.*_here" .env; then
-    warn ".env contains placeholder values"
+  if grep -qE "CHANGE_ME|REPLACE_ME|your_.*_here|dev_samsara_webhook_secret_not_for_production" .env; then
+    warn ".env contains placeholder / dev values - replace before pointing real traffic here"
   fi
   if grep -qE "^(POSTGRES_PASSWORD|KONG_PG_PASSWORD|REDIS_PASSWORD|N8N_BASIC_AUTH_PASSWORD|GF_SECURITY_ADMIN_PASSWORD)=.{0,15}$" .env; then
     warn "At least one password in .env is shorter than 16 chars"
