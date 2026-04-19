@@ -594,6 +594,39 @@ services:
     networks: [gateway-network]
     logging: *default-logging
 
+  # --------------------------------------------------------------------------
+  # Admin UI - unified credential / integration management (opt-in)
+  # Profile-gated: starts only with `--profile admin`. Loopback-only.
+  # Read-only in phase A; writes land in a later phase.
+  # --------------------------------------------------------------------------
+  admin-ui:
+    build: ./admin-ui/backend
+    container_name: gateway-admin-ui
+    <<: *default-restart
+    profiles: ["admin"]
+    environment:
+      ADMIN_ENV_FILE: /app/env/.env
+      ADMIN_STATIC_DIR: /app/static
+    volumes:
+      - ./.env:/app/env/.env:ro
+      - ./admin-ui/index.html:/app/static/index.html:ro
+      - ./admin-ui/README.md:/app/static/README.md:ro
+    ports:
+      # Loopback only. Behind Kong + IP allowlist + OIDC for remote access.
+      - "127.0.0.1:7070:7070"
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:7070/api/health').read()\""]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    deploy:
+      resources:
+        limits: { cpus: '0.5', memory: 256M }
+        reservations: { cpus: '0.05', memory: 64M }
+    networks: [gateway-network]
+    logging: *default-logging
+
 volumes:
   postgres_data:
   redis_data:
