@@ -608,6 +608,13 @@ services:
       ADMIN_ENV_FILE: /app/env/.env
       ADMIN_STATIC_DIR: /app/static
       ADMIN_AUDIT_DB:  /app/data/audit.db
+      # n8n source reads credentials metadata via the internal REST API
+      # (basic auth) or public API (if N8N_API_KEY is set). Values are
+      # never returned by n8n, so this is safe read-only.
+      N8N_BASE_URL: http://n8n:5678
+      N8N_BASIC_AUTH_USER: ${N8N_BASIC_AUTH_USER}
+      N8N_BASIC_AUTH_PASSWORD: ${N8N_BASIC_AUTH_PASSWORD}
+      N8N_API_KEY: ${N8N_API_KEY:-}
     volumes:
       # .env mounted RW so writes apply on save.
       - ./.env:/app/env/.env:rw

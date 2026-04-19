@@ -37,6 +37,7 @@ from sources.env import (
     services_for,
     set_env_credential,
 )
+from sources.n8n_api import is_reachable as n8n_reachable, list_n8n_credentials
 
 app = FastAPI(
     title="Gateway Admin",
@@ -55,7 +56,6 @@ STATIC_DIR = Path(os.getenv("ADMIN_STATIC_DIR", "/app/static"))
 
 @app.get("/api/health", tags=["meta"])
 def health() -> dict:
-    # Check whether docker daemon is reachable; restart endpoint needs it.
     docker_ok = False
     try:
         svc_mod.client().ping()
@@ -64,11 +64,11 @@ def health() -> dict:
         pass
     return {
         "status": "ok",
-        "phase":  "C",
+        "phase":  "D",
         "sources": {
-            "env":  {"enabled": True,  "writable": True},
-            "n8n":  {"enabled": False, "writable": False},
-            "kong": {"enabled": False, "writable": False},
+            "env":  {"enabled": True,             "writable": True},
+            "n8n":  {"enabled": n8n_reachable(), "writable": False},
+            "kong": {"enabled": False,           "writable": False},
         },
         "restart": {"enabled": docker_ok},
     }
@@ -91,17 +91,15 @@ def list_credentials(
     items: list[dict] = []
     if source in (None, "env"):
         items.extend(list_env_credentials())
-    if source in ("n8n", "kong"):
-        # Phases D/E will populate these.
+    if source in (None, "n8n"):
+        items.extend(list_n8n_credentials())
+    if source == "kong":
         return JSONResponse(
             status_code=501,
-            content={
-                "error": f"source '{source}' not implemented in phase A",
-                "items": [],
-            },
+            content={"error": f"source 'kong' not implemented yet (phase E)", "items": []},
         )
     if integration:
-        items = [i for i in items if i["integration"].lower() == integration.lower()]
+        items = [i for i in items if (i.get("integration") or "").lower() == integration.lower()]
     return {
         "items":    items,
         "count":    len(items),
