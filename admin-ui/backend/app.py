@@ -22,10 +22,13 @@ import secrets
 from pathlib import Path
 from typing import Optional
 
-from fastapi import Depends, FastAPI, HTTPException, Query, Request, status
+import traceback
+
+from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response, status
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from fastapi.staticfiles import StaticFiles
+from prometheus_client import CONTENT_TYPE_LATEST, Counter, Histogram, generate_latest
 from pydantic import BaseModel, Field
 
 import audit
@@ -67,6 +70,41 @@ app = FastAPI(
 audit.init_schema()
 
 STATIC_DIR = Path(os.getenv("ADMIN_STATIC_DIR", "/app/static"))
+
+# ---------------------------------------------------------------------------
+# Prometheus metrics
+# ---------------------------------------------------------------------------
+# Labels use the matched route *template* (e.g. /api/credentials/env/{name})
+# instead of the actual path, to cap cardinality. Status is the response code
+# as a string so Prometheus doesn't need numeric conversions for regex matches.
+
+admin_requests_total = Counter(
+    "admin_requests_total",
+    "Total HTTP requests handled by admin-ui backend.",
+    ["path", "method", "status"],
+)
+admin_errors_total = Counter(
+    "admin_errors_total",
+    "Requests that returned 5xx OR raised unhandled exceptions.",
+    ["path", "method", "status"],
+)
+admin_request_seconds = Histogram(
+    "admin_request_seconds",
+    "Request duration in seconds.",
+    ["path", "method"],
+    buckets=(0.01, 0.05, 0.1, 0.25, 0.5, 1, 2, 5, 10),
+)
+
+
+def _route_template(request: Request) -> str:
+    """Return the matched route template so label cardinality stays bounded.
+
+    Unmatched paths (404s) fall back to "<unmatched>" rather than the raw URL.
+    """
+    r = request.scope.get("route")
+    if r is not None and hasattr(r, "path"):
+        return r.path
+    return "<unmatched>"
 
 # ---------------------------------------------------------------------------
 # Auth gate
@@ -115,6 +153,38 @@ def _current_actor(
 # ---------------------------------------------------------------------------
 # Health + meta
 # ---------------------------------------------------------------------------
+
+@app.middleware("http")
+async def _metrics_middleware(request: Request, call_next):
+    import time
+    started = time.perf_counter()
+    try:
+        response = await call_next(request)
+    except Exception as exc:
+        path = _route_template(request)
+        admin_errors_total.labels(path=path, method=request.method, status="500").inc()
+        admin_requests_total.labels(path=path, method=request.method, status="500").inc()
+        print(f"[admin-ui] UNHANDLED {request.method} {path}: {exc}\n{traceback.format_exc()}", flush=True)
+        return JSONResponse(status_code=500, content={"detail": "internal error"})
+    finally:
+        admin_request_seconds.labels(path=_route_template(request), method=request.method).observe(time.perf_counter() - started)
+    path   = _route_template(request)
+    status_str = str(response.status_code)
+    admin_requests_total.labels(path=path, method=request.method, status=status_str).inc()
+    if response.status_code >= 500:
+        admin_errors_total.labels(path=path, method=request.method, status=status_str).inc()
+    return response
+
+
+@app.get("/metrics", include_in_schema=False)
+def metrics():
+    """Prometheus scrape endpoint. Intentionally unauthenticated: the admin-ui
+    container is only reachable on the internal docker network (127.0.0.1:7070
+    from the host, no external exposure) and Prometheus scrapes it by service
+    name. If we ever expose admin-ui beyond loopback, gate this too.
+    """
+    return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)
+
 
 @app.get("/api/health", tags=["meta"])
 def health(actor: str = Depends(_current_actor)) -> dict:

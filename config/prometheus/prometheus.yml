@@ -58,3 +58,11 @@ scrape_configs:
   - job_name: loki
     static_configs:
       - targets: ["loki:3100"]
+
+  # admin-ui is profile-gated; Prometheus will log scrape errors when it
+  # isn't running. That's expected - the target exists in the catalog so
+  # we can see errors once the admin profile is enabled. No alert fires
+  # on scrape failure for this job.
+  - job_name: admin-ui
+    static_configs:
+      - targets: ["admin-ui:7070"]
