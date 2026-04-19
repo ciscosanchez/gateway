@@ -609,6 +609,11 @@ services:
       ADMIN_STATIC_DIR: /app/static
       ADMIN_AUDIT_DB:  /app/data/audit.db
       KONG_DECLARATIVE_FILE: /app/kong/kong.yml
+      # HTTP Basic auth on the whole admin surface. Both must be set for the
+      # gate to activate; unset = gate disabled (dev-only). Rotate these by
+      # editing .env + restarting the admin-ui container.
+      ADMIN_UI_USER:     ${ADMIN_UI_USER:-}
+      ADMIN_UI_PASSWORD: ${ADMIN_UI_PASSWORD:-}
       # n8n source reads credentials metadata via the internal REST API
       # (basic auth) or public API (if N8N_API_KEY is set). Values are
       # never returned by n8n, so this is safe read-only.

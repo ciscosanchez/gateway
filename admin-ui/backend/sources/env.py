@@ -63,6 +63,10 @@ REGISTRY: dict[str, dict] = {
     "ALERTMANAGER_SLACK_WEBHOOK": {"integration": "Alerting", "kind": "secret", "services": ["alertmanager"]},
     "ALERTMANAGER_PAGERDUTY_KEY": {"integration": "Alerting", "kind": "secret", "services": ["alertmanager"]},
     "BACKUP_AGE_RECIPIENT":       {"integration": "Backup",   "kind": "config", "services": []},
+
+    # --- Admin UI gate ---
+    "ADMIN_UI_USER":              {"integration": "Infra", "kind": "identifier", "services": []},
+    "ADMIN_UI_PASSWORD":          {"integration": "Infra", "kind": "secret",     "services": []},
 }
 
 

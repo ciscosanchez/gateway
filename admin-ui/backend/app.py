@@ -2,27 +2,29 @@
 
 Phase A: read-only env source.
 Phase B: frontend wires up to /api/credentials.
-Phase C (this commit): writes to .env + append-only SQLite audit log.
+Phase C: writes to .env + append-only SQLite audit log.
 Phases D/E: n8n + Kong sources with their own write paths.
+Phase 2 (this commit): HTTP Basic auth gate on /api/* when
+  ADMIN_UI_USER / ADMIN_UI_PASSWORD are set in the environment. If either
+  is unset the gate is disabled (defaults only suitable for throwaway
+  local dev); compose injects real values in production.
 
 Safety rails:
-- Plaintext values are never echoed back in responses. The client sees only
-  value_masked (last 4 chars for secrets). Audit rows store sha256 hashes
-  of before/after values, not the values themselves.
-- Writes are atomic (rename into place). A failed write leaves the old
-  file intact.
-- Writes to unknown variable names are rejected (see REGISTRY in
-  sources/env.py). Use the code to add a new var; the UI won't silently
-  pollute .env.
+- Plaintext values are never echoed back in responses.
+- Writes are atomic; failed writes leave the old state intact.
+- Writes to unknown variable names / consumers / n8n types are rejected.
+- Audit rows store sha256 hashes of before/after, not the values.
 """
 from __future__ import annotations
 
 import os
+import secrets
 from pathlib import Path
 from typing import Optional
 
-from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi import Depends, FastAPI, HTTPException, Query, Request, status
 from fastapi.responses import FileResponse, JSONResponse
+from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
@@ -65,13 +67,56 @@ audit.init_schema()
 
 STATIC_DIR = Path(os.getenv("ADMIN_STATIC_DIR", "/app/static"))
 
+# ---------------------------------------------------------------------------
+# Auth gate
+# ---------------------------------------------------------------------------
+# If both ADMIN_UI_USER and ADMIN_UI_PASSWORD are set, every /api/* endpoint
+# requires HTTP Basic auth matching them. When either is unset, the gate is
+# a no-op so local-dev / wireframe mode keeps working. Production compose
+# injects real values from .env.
+
+ADMIN_UI_USER     = os.getenv("ADMIN_UI_USER", "")
+ADMIN_UI_PASSWORD = os.getenv("ADMIN_UI_PASSWORD", "")
+_AUTH_ENABLED     = bool(ADMIN_UI_USER and ADMIN_UI_PASSWORD)
+
+_http_basic = HTTPBasic(auto_error=False)
+
+
+def _current_actor(
+    credentials: Optional[HTTPBasicCredentials] = Depends(_http_basic),
+) -> str:
+    """Validate basic-auth credentials; return the user name for audit rows.
+
+    - Gate disabled (no envs) -> return "admin" (backwards compatible).
+    - Gate enabled + valid    -> return the username.
+    - Gate enabled + invalid  -> 401 with WWW-Authenticate so browsers prompt.
+    """
+    if not _AUTH_ENABLED:
+        return "admin"
+    if credentials is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="admin auth required",
+            headers={"WWW-Authenticate": 'Basic realm="Gateway Admin"'},
+        )
+    # constant-time compare to sidestep trivial timing oracles
+    user_ok = secrets.compare_digest(credentials.username, ADMIN_UI_USER)
+    pass_ok = secrets.compare_digest(credentials.password, ADMIN_UI_PASSWORD)
+    if not (user_ok and pass_ok):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="invalid credentials",
+            headers={"WWW-Authenticate": 'Basic realm="Gateway Admin"'},
+        )
+    return credentials.username
+
 
 # ---------------------------------------------------------------------------
 # Health + meta
 # ---------------------------------------------------------------------------
 
 @app.get("/api/health", tags=["meta"])
-def health() -> dict:
+def health(actor: str = Depends(_current_actor)) -> dict:
     docker_ok = False
     try:
         svc_mod.client().ping()
@@ -92,8 +137,8 @@ def health() -> dict:
 
 
 @app.get("/api/version", tags=["meta"])
-def version() -> dict:
-    return {"version": app.version}
+def version(actor: str = Depends(_current_actor)) -> dict:
+    return {"version": app.version, "auth_enabled": _AUTH_ENABLED}
 
 
 # ---------------------------------------------------------------------------
@@ -104,6 +149,7 @@ def version() -> dict:
 def list_credentials(
     source: Optional[str] = Query(default=None, description="env | n8n | kong"),
     integration: Optional[str] = Query(default=None),
+    actor: str = Depends(_current_actor),
 ) -> dict:
     items: list[dict] = []
     if source in (None, "env"):
@@ -122,7 +168,7 @@ def list_credentials(
 
 
 @app.get("/api/credentials/{name}", tags=["credentials"])
-def get_credential(name: str) -> dict:
+def get_credential(name: str, actor: str = Depends(_current_actor)) -> dict:
     for item in list_env_credentials():
         if item["name"] == name:
             return item
@@ -139,7 +185,10 @@ def _client_ip(req: Request) -> str:
 
 
 @app.put("/api/credentials/env/{name}", tags=["credentials"])
-def upsert_env_credential(name: str, body: UpsertReq, req: Request) -> dict:
+def upsert_env_credential(
+    name: str, body: UpsertReq, req: Request,
+    actor: str = Depends(_current_actor),
+) -> dict:
     try:
         saved = set_env_credential(name, body.value)
     except UnknownCredential as e:
@@ -157,13 +206,17 @@ def upsert_env_credential(name: str, body: UpsertReq, req: Request) -> dict:
         after_hash=after,
         note=body.note,
         client_ip=_client_ip(req),
+        actor=actor,
     )
     audit.mark_restart_pending(services_for(name))
     return saved
 
 
 @app.delete("/api/credentials/env/{name}", tags=["credentials"])
-def clear_env_credential(name: str, req: Request, note: Optional[str] = None) -> dict:
+def clear_env_credential(
+    name: str, req: Request, note: Optional[str] = None,
+    actor: str = Depends(_current_actor),
+) -> dict:
     try:
         cleared = delete_env_credential(name)
     except UnknownCredential as e:
@@ -181,6 +234,7 @@ def clear_env_credential(name: str, req: Request, note: Optional[str] = None) ->
         after_hash=None,
         note=note,
         client_ip=_client_ip(req),
+        actor=actor,
     )
     audit.mark_restart_pending(services_for(name))
     return cleared
@@ -198,7 +252,10 @@ class N8NUpsertReq(BaseModel):
 
 
 @app.put("/api/credentials/n8n/{name}", tags=["credentials"])
-def upsert_n8n_credential(name: str, body: N8NUpsertReq, req: Request) -> dict:
+def upsert_n8n_credential(
+    name: str, body: N8NUpsertReq, req: Request,
+    actor: str = Depends(_current_actor),
+) -> dict:
     try:
         saved = set_n8n_credential(name, body.type, body.data, existing_id=body.existing_id)
     except UnknownN8NType as e:
@@ -215,12 +272,16 @@ def upsert_n8n_credential(name: str, body: N8NUpsertReq, req: Request) -> dict:
         after_hash=after,
         note=body.note,
         client_ip=_client_ip(req),
+        actor=actor,
     )
     return saved
 
 
 @app.delete("/api/credentials/n8n/{name}", tags=["credentials"])
-def clear_n8n_credential(name: str, req: Request, note: Optional[str] = None) -> dict:
+def clear_n8n_credential(
+    name: str, req: Request, note: Optional[str] = None,
+    actor: str = Depends(_current_actor),
+) -> dict:
     # Resolve name -> id via the list endpoint so the caller doesn't need to
     # know n8n's internal id.
     items = list_n8n_credentials()
@@ -238,6 +299,7 @@ def clear_n8n_credential(name: str, req: Request, note: Optional[str] = None) ->
         integration=match.get("integration"),
         note=note,
         client_ip=_client_ip(req),
+        actor=actor,
     )
     return {"name": name, **res}
 
@@ -247,7 +309,10 @@ def clear_n8n_credential(name: str, req: Request, note: Optional[str] = None) ->
 # ---------------------------------------------------------------------------
 
 @app.put("/api/credentials/kong/{consumer}", tags=["credentials"])
-def upsert_kong_credential(consumer: str, body: UpsertReq, req: Request) -> dict:
+def upsert_kong_credential(
+    consumer: str, body: UpsertReq, req: Request,
+    actor: str = Depends(_current_actor),
+) -> dict:
     try:
         saved = set_kong_key(consumer, body.value)
     except UnknownKongConsumer as e:
@@ -265,12 +330,16 @@ def upsert_kong_credential(consumer: str, body: UpsertReq, req: Request) -> dict
         after_hash=after,
         note=body.note,
         client_ip=_client_ip(req),
+        actor=actor,
     )
     return saved
 
 
 @app.delete("/api/credentials/kong/{consumer}", tags=["credentials"])
-def clear_kong_credential(consumer: str, req: Request, note: Optional[str] = None) -> dict:
+def clear_kong_credential(
+    consumer: str, req: Request, note: Optional[str] = None,
+    actor: str = Depends(_current_actor),
+) -> dict:
     try:
         cleared = delete_kong_key(consumer)
     except UnknownKongConsumer as e:
@@ -288,6 +357,7 @@ def clear_kong_credential(consumer: str, req: Request, note: Optional[str] = Non
         after_hash=None,
         note=note,
         client_ip=_client_ip(req),
+        actor=actor,
     )
     return cleared
 
@@ -301,13 +371,16 @@ class RestartReq(BaseModel):
 
 
 @app.get("/api/services/pending", tags=["services"])
-def pending_restarts() -> dict:
+def pending_restarts(actor: str = Depends(_current_actor)) -> dict:
     rows = audit.pending_restarts()
     return {"items": rows, "count": len(rows)}
 
 
 @app.post("/api/services/restart", tags=["services"])
-def restart_services(body: RestartReq, req: Request) -> dict:
+def restart_services(
+    body: RestartReq, req: Request,
+    actor: str = Depends(_current_actor),
+) -> dict:
     if not body.services:
         raise HTTPException(status_code=400, detail="no services specified")
     try:
@@ -325,6 +398,7 @@ def restart_services(body: RestartReq, req: Request) -> dict:
             name=s,
             integration=None,
             client_ip=_client_ip(req),
+            actor=actor,
         )
     return {"results": results, "cleared": succeeded}
 
@@ -337,6 +411,7 @@ def restart_services(body: RestartReq, req: Request) -> dict:
 def list_audit(
     limit: int = Query(default=50, ge=1, le=500),
     name:  Optional[str] = Query(default=None),
+    actor: str = Depends(_current_actor),
 ) -> dict:
     rows = audit.recent(limit=limit, name=name)
     return {"items": rows, "count": len(rows)}
@@ -352,14 +427,14 @@ if STATIC_DIR.exists():
     app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
     @app.get("/", include_in_schema=False)
-    def index():
+    def index(actor: str = Depends(_current_actor)):
         target = STATIC_DIR / "index.html"
         if not target.exists():
             raise HTTPException(status_code=500, detail="index.html missing from static dir")
         return FileResponse(target)
 
     @app.get("/README.md", include_in_schema=False)
-    def readme():
+    def readme(actor: str = Depends(_current_actor)):
         target = STATIC_DIR / "README.md"
         if target.exists():
             return FileResponse(target, media_type="text/markdown; charset=utf-8")
