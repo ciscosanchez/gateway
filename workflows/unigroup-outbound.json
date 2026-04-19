@@ -1,0 +1,277 @@
+{
+  "name": "Unigroup Converge - Outbound (GraphQL + Documents)",
+  "nodes": [
+    {
+      "parameters": {
+        "topic": "unigroup-out",
+        "groupId": "unigroup-outbound-consumer",
+        "brokers": "redpanda-0:29092,redpanda-1:29092,redpanda-2:29092",
+        "options": {
+          "allowTopicCreation": false,
+          "autoCommit": false,
+          "maxInFlightRequests": 1,
+          "sessionTimeout": 30000,
+          "heartbeatInterval": 3000
+        }
+      },
+      "name": "Kafka Trigger - unigroup-out",
+      "type": "n8n-nodes-base.kafkaTrigger",
+      "typeVersion": 1,
+      "position": [220, 320]
+    },
+    {
+      "parameters": {
+        "functionCode": "// Parse the incoming Unigroup request and select the right URL pair for\n// the target environment. Expected message shape:\n//   {\n//     operation: 'graphql_query' | 'graphql_mutation' | 'upload_document',\n//     query:     '...'            // for graphql_*\n//     variables: { ... }          // for graphql_*\n//     document:  {                // for upload_document\n//       order_id:   'ORD12345',\n//       filename:   'bol.pdf',\n//       content_base64: '...',\n//       content_type: 'application/pdf'\n//     },\n//     correlation_id: '...',\n//     _retry_count: 0\n//   }\nconst kafkaMessage = $input.item.json;\nconst msg = typeof kafkaMessage.value === 'string' ? JSON.parse(kafkaMessage.value) : kafkaMessage.value;\n\nif (!msg || !msg.operation) {\n  throw new Error('invalid unigroup-out message: missing operation');\n}\nconst allowed = new Set(['graphql_query', 'graphql_mutation', 'upload_document']);\nif (!allowed.has(msg.operation)) {\n  throw new Error(`unsupported operation: ${msg.operation}`);\n}\n\nconst env = ($env.UNIGROUP_ENV || 'staging').toLowerCase();\nif (env !== 'staging' && env !== 'production') {\n  throw new Error(`UNIGROUP_ENV must be 'staging' or 'production', got '${env}'`);\n}\nconst suffix = env === 'production' ? 'PROD' : 'STAGING';\n\nconst tokenUrl   = $env[`UNIGROUP_TOKEN_URL_${suffix}`];\nconst graphqlUrl = $env[`UNIGROUP_GRAPHQL_URL_${suffix}`];\nconst docsUrl    = $env[`UNIGROUP_DOCS_URL_${suffix}`];\nconst clientId     = $env.UNIGROUP_CLIENT_ID;\nconst clientSecret = $env.UNIGROUP_CLIENT_SECRET;\nconst scope        = $env.UNIGROUP_OAUTH_SCOPE || '';\n\nif (!clientId || !clientSecret || clientId === 'CHANGE_ME') {\n  throw new Error('UNIGROUP_CLIENT_ID / UNIGROUP_CLIENT_SECRET not configured');\n}\n\nreturn {\n  json: {\n    operation:     msg.operation,\n    query:         msg.query,\n    variables:     msg.variables || {},\n    document:      msg.document || null,\n    correlation_id: msg.correlation_id || null,\n    retry_count:   msg._retry_count || 0,\n    max_retries:   5,\n    env,\n    urls:          { token: tokenUrl, graphql: graphqlUrl, docs: docsUrl },\n    credentials:   { client_id: clientId, client_secret: clientSecret, scope },\n    original:      msg\n  }\n};"
+      },
+      "name": "Validate + Resolve Env",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [440, 320]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $json.urls.token }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Content-Type", "value": "application/x-www-form-urlencoded" },
+            { "name": "Accept",       "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "form-urlencoded",
+        "bodyParameters": {
+          "parameters": [
+            { "name": "grant_type",    "value": "client_credentials" },
+            { "name": "client_id",     "value": "={{ $json.credentials.client_id }}" },
+            { "name": "client_secret", "value": "={{ $json.credentials.client_secret }}" },
+            { "name": "scope",         "value": "={{ $json.credentials.scope }}" }
+          ]
+        },
+        "options": {
+          "timeout": 10000,
+          "retry": { "maxTries": 2, "waitBetweenTries": 1000 }
+        }
+      },
+      "name": "Fetch Keycloak Token",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [660, 320]
+    },
+    {
+      "parameters": {
+        "functionCode": "// Merge token with the validated context. The token response is the current\n// item; the previous step's payload is on $('Validate + Resolve Env').item.\nconst tokenResp = $input.item.json;\nconst ctx = $('Validate + Resolve Env').item.json;\n\nif (!tokenResp.access_token) {\n  throw new Error(`token endpoint did not return access_token: ${JSON.stringify(tokenResp).slice(0,200)}`);\n}\n\nreturn {\n  json: {\n    ...ctx,\n    access_token: tokenResp.access_token,\n    token_type:   tokenResp.token_type || 'Bearer',\n    expires_in:   tokenResp.expires_in || null\n  }\n};"
+      },
+      "name": "Extract Token",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [880, 320]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "string": [
+            { "value1": "={{ $json.operation }}", "operation": "equal", "value2": "upload_document" }
+          ]
+        }
+      },
+      "name": "GraphQL or Document?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [1100, 320]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $json.urls.graphql }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Authorization", "value": "=Bearer {{ $json.access_token }}" },
+            { "name": "Content-Type",  "value": "application/json" },
+            { "name": "Accept",        "value": "application/json" },
+            { "name": "X-Request-Id",  "value": "={{ $json.correlation_id || $execution.id }}" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ query: $json.query, variables: $json.variables }) }}",
+        "options": {
+          "timeout": 30000,
+          "retry": { "maxTries": 2, "waitBetweenTries": 2000 }
+        }
+      },
+      "name": "POST GraphQL",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [1320, 220]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $json.urls.docs }}/upload/to-order/{{ $json.document.order_id }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Authorization", "value": "=Bearer {{ $json.access_token }}" },
+            { "name": "Content-Type",  "value": "={{ $json.document.content_type || 'application/octet-stream' }}" },
+            { "name": "X-Filename",    "value": "={{ $json.document.filename }}" },
+            { "name": "X-Request-Id",  "value": "={{ $json.correlation_id || $execution.id }}" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ filename: $json.document.filename, content_base64: $json.document.content_base64 }) }}",
+        "options": {
+          "timeout": 60000,
+          "retry": { "maxTries": 2, "waitBetweenTries": 2000 }
+        }
+      },
+      "name": "POST Document Upload",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [1320, 420]
+    },
+    {
+      "parameters": {
+        "functionCode": "// Normalize success output. GraphQL responses include {data, errors}; a\n// 200 with a non-empty errors array is still a failure at the API level.\nconst resp = $input.item.json;\nconst ctx  = $('Extract Token').item.json;\nconst isGraphql = ctx.operation !== 'upload_document';\n\nif (isGraphql && Array.isArray(resp.errors) && resp.errors.length > 0) {\n  throw new Error(`GraphQL errors: ${JSON.stringify(resp.errors).slice(0,500)}`);\n}\n\nreturn {\n  json: {\n    success: true,\n    workflow: 'unigroup-outbound',\n    operation: ctx.operation,\n    correlation_id: ctx.correlation_id,\n    response: resp,\n    env: ctx.env,\n    timestamp: new Date().toISOString()\n  }\n};"
+      },
+      "name": "Format Success",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [1540, 320]
+    },
+    {
+      "parameters": {
+        "operation": "sendMessage",
+        "topic": "unigroup-in",
+        "sendInputData": false,
+        "jsonMessage": "={{ JSON.stringify($json) }}",
+        "options": { "acks": -1, "compression": "gzip" }
+      },
+      "name": "Confirm to Kafka (unigroup-in)",
+      "type": "n8n-nodes-base.kafka",
+      "typeVersion": 1,
+      "position": [1760, 320],
+      "credentials": {
+        "kafka": { "id": "redpanda", "name": "Redpanda (internal)" }
+      }
+    },
+    {
+      "parameters": {
+        "functionCode": "// Decide retry vs DLQ. 401 = token issue (retry once after forcing a fresh\n// token fetch; since we fetch per-run this happens automatically on requeue).\n// 429 / 5xx = transient. 4xx else = permanent, straight to DLQ.\nconst error = $input.item.json;\nconst ctx = $('Validate + Resolve Env').item ? $('Validate + Resolve Env').item.json : {};\nconst retryCount = ctx.retry_count || 0;\nconst maxRetries = ctx.max_retries || 5;\nconst status = error.status || error.statusCode || (error.response && error.response.status) || 0;\nconst isTransient = status === 401 || status === 429 || (status >= 500 && status < 600);\nconst shouldRetry = isTransient && retryCount < maxRetries;\n\nreturn {\n  json: {\n    workflow: 'unigroup-outbound',\n    operation: ctx.operation,\n    correlation_id: ctx.correlation_id,\n    error_message: error.message || (error.response && error.response.statusText) || 'unknown error',\n    status,\n    retry_count: retryCount,\n    max_retries: maxRetries,\n    should_retry: shouldRetry,\n    retry_delay_ms: Math.min(60000, 1000 * Math.pow(2, retryCount)) + Math.floor(Math.random() * 500),\n    requeue_payload: { ...(ctx.original || {}), _retry_count: retryCount + 1 },\n    timestamp: new Date().toISOString()\n  }\n};"
+      },
+      "name": "Handle Error",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [1320, 620]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            { "value1": "={{ $json.should_retry }}", "value2": true }
+          ]
+        }
+      },
+      "name": "Retry or DLQ?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [1540, 620]
+    },
+    {
+      "parameters": {
+        "amount": "={{ $json.retry_delay_ms }}",
+        "unit": "milliseconds"
+      },
+      "name": "Backoff",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1,
+      "position": [1760, 560]
+    },
+    {
+      "parameters": {
+        "operation": "sendMessage",
+        "topic": "unigroup-out",
+        "sendInputData": false,
+        "jsonMessage": "={{ JSON.stringify($json.requeue_payload) }}",
+        "options": { "acks": -1, "compression": "gzip" }
+      },
+      "name": "Requeue on unigroup-out",
+      "type": "n8n-nodes-base.kafka",
+      "typeVersion": 1,
+      "position": [1960, 560],
+      "credentials": {
+        "kafka": { "id": "redpanda", "name": "Redpanda (internal)" }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "sendMessage",
+        "topic": "errors-dlq",
+        "sendInputData": false,
+        "jsonMessage": "={{ JSON.stringify($json) }}",
+        "options": { "acks": -1, "compression": "gzip" }
+      },
+      "name": "Send to DLQ",
+      "type": "n8n-nodes-base.kafka",
+      "typeVersion": 1,
+      "position": [1760, 700],
+      "credentials": {
+        "kafka": { "id": "redpanda", "name": "Redpanda (internal)" }
+      }
+    }
+  ],
+  "connections": {
+    "Kafka Trigger - unigroup-out": {
+      "main": [[{ "node": "Validate + Resolve Env", "type": "main", "index": 0 }]]
+    },
+    "Validate + Resolve Env": {
+      "main":  [[{ "node": "Fetch Keycloak Token", "type": "main", "index": 0 }]],
+      "error": [[{ "node": "Handle Error", "type": "main", "index": 0 }]]
+    },
+    "Fetch Keycloak Token": {
+      "main":  [[{ "node": "Extract Token", "type": "main", "index": 0 }]],
+      "error": [[{ "node": "Handle Error", "type": "main", "index": 0 }]]
+    },
+    "Extract Token": {
+      "main": [[{ "node": "GraphQL or Document?", "type": "main", "index": 0 }]]
+    },
+    "GraphQL or Document?": {
+      "main": [
+        [{ "node": "POST Document Upload", "type": "main", "index": 0 }],
+        [{ "node": "POST GraphQL",         "type": "main", "index": 0 }]
+      ]
+    },
+    "POST GraphQL": {
+      "main":  [[{ "node": "Format Success", "type": "main", "index": 0 }]],
+      "error": [[{ "node": "Handle Error",   "type": "main", "index": 0 }]]
+    },
+    "POST Document Upload": {
+      "main":  [[{ "node": "Format Success", "type": "main", "index": 0 }]],
+      "error": [[{ "node": "Handle Error",   "type": "main", "index": 0 }]]
+    },
+    "Format Success": {
+      "main": [[{ "node": "Confirm to Kafka (unigroup-in)", "type": "main", "index": 0 }]]
+    },
+    "Handle Error": {
+      "main": [[{ "node": "Retry or DLQ?", "type": "main", "index": 0 }]]
+    },
+    "Retry or DLQ?": {
+      "main": [
+        [{ "node": "Backoff",     "type": "main", "index": 0 }],
+        [{ "node": "Send to DLQ", "type": "main", "index": 0 }]
+      ]
+    },
+    "Backoff": {
+      "main": [[{ "node": "Requeue on unigroup-out", "type": "main", "index": 0 }]]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveDataErrorExecution": "all",
+    "saveDataSuccessExecution": "none",
+    "timezone": "America/Los_Angeles"
+  }
+}

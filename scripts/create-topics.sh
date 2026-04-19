@@ -15,6 +15,14 @@ topics=(
   # business events
   "orders                12 3 2592000000 zstd"        # 30d
   "inventory              6 3 604800000  zstd"        # 7d
+  # Unigroup Converge outbound: messages other workflows publish when they
+  # want us to call Unigroup's GraphQL/documents API. Processed by the
+  # unigroup-outbound workflow.
+  "unigroup-out           6 3 2592000000 zstd"        # 30d
+  # Unigroup outcomes + pulled shipment updates from polling workflows.
+  "unigroup-in            6 3 604800000  zstd"        # 7d
+  # Legacy: any remaining true-EDI integrations. Will be removed once all
+  # flows are migrated off EDI.
   "edi-outbound           6 3 2592000000 zstd"        # 30d
   "netsuite-updates      12 3 604800000  zstd"        # 7d
   "wms-events             6 3 604800000  zstd"        # 7d
