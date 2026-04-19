@@ -67,6 +67,8 @@ If it fails fast, check first:
 - Credential signature method (`HMAC-SHA256`)
 - Role permissions (`REST Web Services`, `Login Using Access Tokens`, `Sales Order`)
 
+Back to: [Getting Started](./getting-started.md#quick-links)
+
 ## Phase 1: NetSuite Setup (Do This First)
 
 ### 1. Enable Token-Based Authentication (TBA)

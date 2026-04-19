@@ -2,7 +2,9 @@
 
 In-house integration platform: **Kong** (DB-less) → **Redpanda** (3-node Kafka cluster) → **n8n** (queue-mode workflow orchestration), backed by Postgres + Redis and a full Prometheus / Grafana / Loki observability stack.
 
-**Integrations:** Samsara • NetSuite (OAuth1 TBA) • Unigroup Converge (OAuth2 + GraphQL) • WMS • Custom APIs
+**Integrations:** Samsara • NetSuite (OAuth1 TBA) • Unigroup Converge (OAuth2 + GraphQL) • WMS • Dispatch • Custom APIs
+
+**Credential management:** [`admin-ui/`](admin-ui/README.md) — unified read/write across `.env`, n8n credentials, and Kong consumers, with append-only audit + rotate-with-healthcheck + one-click restart. Profile-gated, loopback-only.
 
 > **Status:** HA-ready stack (3-broker Redpanda, queue-mode n8n workers, shared
 > rate-limit counters) that runs on a single host via `docker-compose` for
@@ -38,9 +40,10 @@ graph LR
   REDIS --> WORK[n8n-worker × N]
   WORK --> RP[Redpanda<br/>3-broker cluster<br/>RF=3, min.insync=2]
   RP --> WORK
-  WORK --> NS[NetSuite]
-  WORK --> WMS[WMS]
-  WORK --> EDI[Unigroup EDI]
+  WORK --> NS[NetSuite<br/>OAuth1 TBA]
+  WORK --> WMS[WMS<br/>REST + key]
+  WORK --> DISP[Dispatch<br/>REST + key]
+  WORK --> UG[Unigroup Converge<br/>OAuth2 + GraphQL]
   N8N --> PG[(Postgres)]
   WORK --> PG
 
@@ -85,6 +88,28 @@ To scale workers: `docker compose up -d --scale n8n-worker=4`.
 
 Edit `kong/kong.yml` → apply with `./scripts/kong-setup.sh` (hot reload via loopback admin API).
 
+### Optional: start the admin UI
+
+```bash
+docker compose --profile admin up -d admin-ui
+open http://127.0.0.1:7070         # requires ADMIN_UI_USER / ADMIN_UI_PASSWORD in .env
+```
+
+Read/write credential management across `.env`, n8n credentials, and Kong
+consumers, with rotate-with-healthcheck and an audit log. See
+[`admin-ui/README.md`](admin-ui/README.md) for the full flow.
+
+### Optional: replay a canned Samsara payload through the funnel
+
+```bash
+./scripts/samsara-replay.sh              # HTTP 202 expected (Kong HMAC + key-auth + n8n + Kafka)
+TAMPER=1 ./scripts/samsara-replay.sh     # HTTP 401 expected (proves HMAC rejects)
+docker exec gateway-redpanda-0 rpk topic consume samsara-events \
+  --brokers redpanda-0:29092 -n 1 -f '%v\n'
+```
+
+Same script runs as part of CI's Smoke job.
+
 ---
 
 ## Services
@@ -109,6 +134,7 @@ Edit `kong/kong.yml` → apply with `./scripts/kong-setup.sh` (hot reload via lo
 | cAdvisor          | internal            | Container metrics                      |
 | postgres-exporter | internal            | Postgres metrics                       |
 | redis-exporter    | internal            | Redis metrics                          |
+| admin-ui          | `127.0.0.1:7070` (opt-in, `--profile admin`) | Unified credential/audit/restart UI |
 
 To reach a loopback-bound UI from a workstation:
 ```bash
@@ -129,8 +155,15 @@ All tunables are environment variables consumed by `docker-compose.yml`:
 - **Grafana datasources / dashboards** → `config/grafana/provisioning/`.
 - **Kafka topic layout** → `scripts/create-topics.sh`.
 
-### Rotating an API key
+### Rotating an API key — two ways
 
+**A. Through the admin UI (recommended; includes healthcheck + audit):**
+```bash
+docker compose --profile admin up -d admin-ui
+open http://127.0.0.1:7070     # Credentials → Edit/Rotate → Apply
+```
+
+**B. By hand:**
 1. Edit the relevant consumer block in `kong/kong.yml` (replace the `key:` value).
 2. `./scripts/kong-setup.sh` (hot reload).
 3. Distribute the new key to the caller.
@@ -138,6 +171,24 @@ All tunables are environment variables consumed by `docker-compose.yml`:
 ### Adding a route
 
 Append a new `services:` entry in `kong/kong.yml` with its own `routes:` — the global plugin block will auto-apply auth + rate-limit + size + cors + headers + ip-restriction. Then `./scripts/kong-setup.sh`.
+
+### Kafka topics
+
+Defined in [`scripts/create-topics.sh`](scripts/create-topics.sh):
+
+| Topic              | Partitions | Retention | Purpose                              |
+|--------------------|------------|-----------|--------------------------------------|
+| `samsara-events`   | 24         | 7d        | Inbound Samsara webhooks (by vehicle)|
+| `orders`           | 12         | 30d       | Order events (NetSuite, WMS, ...)    |
+| `inventory`        | 6          | 7d        | Stock adjustments                    |
+| `netsuite-updates` | 12         | 7d        | NetSuite change feed                 |
+| `unigroup-out`     | 6          | 30d       | Messages for Unigroup outbound       |
+| `unigroup-in`      | 6          | 7d        | Unigroup responses + polled status   |
+| `wms-out`          | 6          | 30d       | Messages for WMS outbound            |
+| `wms-updates`      | 6          | 7d        | WMS responses                        |
+| `dispatch-out`     | 6          | 30d       | Messages for Dispatch outbound       |
+| `dispatch-updates` | 6          | 7d        | Dispatch responses                   |
+| `errors-dlq`       | 3          | 90d       | Dead-letter queue, forensic          |
 
 ---
 
@@ -225,13 +276,26 @@ A cron template for daily backups is provided at `scripts/cron/gateway-crontab`.
 │   ├── loki/loki-config.yaml
 │   └── promtail/promtail.yml
 ├── workflows/                       # n8n workflow exports
+│   ├── samsara-webhook-to-kafka.json        # inbound: /samsara -> Kafka
+│   ├── samsara-to-netsuite-pattern.json     # reference pattern
+│   ├── netsuite-webhook-to-kafka.json       # inbound: NetSuite UE script -> /netsuite
+│   ├── netsuite-create-sales-order.json     # outbound: orders topic -> NetSuite
+│   ├── unigroup-outbound.json               # outbound: unigroup-out -> Keycloak + GraphQL
+│   ├── wms-outbound.json                    # outbound: wms-out -> WMS REST
+│   ├── dispatch-outbound.json               # outbound: dispatch-out -> Dispatch REST
+│   └── samples/                             # canned payloads for replay tests
+├── admin-ui/                        # Unified credential management (opt-in)
+│   ├── index.html                           # static SPA
+│   ├── README.md                            # full flow + API reference
+│   └── backend/                             # FastAPI + SQLite audit + docker-socket restart
 ├── scripts/
 │   ├── setup.sh                     # first-time setup (TLS cert + up)
-│   ├── test.sh                      # smoke test
+│   ├── test.sh                      # smoke test (supports rate-limit probe when SMOKE_API_KEY set)
+│   ├── samsara-replay.sh            # sign + POST a canned Samsara payload through Kong
 │   ├── validate-config.sh           # preflight
 │   ├── create-topics.sh             # partitions=N, RF=3, min.insync=2, zstd
 │   ├── kong-setup.sh                # hot-reload kong/kong.yml
-│   ├── backup.sh                    # age-encrypted; retention-enforced
+│   ├── backup.sh                    # age-encrypted; retention-enforced; refuses plaintext by default
 │   ├── restore.sh
 │   └── cron/gateway-crontab
 ├── docs/
@@ -239,10 +303,11 @@ A cron template for daily backups is provided at `scripts/cron/gateway-crontab`.
 │   ├── DEPLOYMENT-CHECKLIST.md
 │   ├── getting-started.md
 │   ├── kong-plugins.md              # reference
-│   ├── netsuite-integration.md
+│   ├── netsuite-integration.md      # TBA + User Event inbound template
 │   ├── samsara-integration.md
+│   ├── unigroup-integration.md      # Converge (OAuth2 + GraphQL) setup + message shape
 │   └── workflow-resilience.md
-└── .github/workflows/ci.yml         # gitleaks + Trivy + smoke test
+└── .github/workflows/ci.yml         # gitleaks + Trivy (blocking on new CRITICAL) + smoke + samsara-replay
 ```
 
 ---

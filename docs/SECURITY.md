@@ -13,9 +13,39 @@
 - Kong admin (`8001`) and manager (`8002`) are bound to `127.0.0.1` in
   `docker-compose.yml`. They are unreachable from the host's external IP.
 - Same for n8n (`5678`), Redpanda Console (`8080`), Grafana (`3002`),
-  Prometheus (`9090`), Alertmanager (`9093`), Loki (`3100`).
+  Prometheus (`9090`), Alertmanager (`9093`), Loki (`3100`), and the
+  optional admin UI (`7070`).
 - Only the public proxy ports `8000`/`8443` listen on `0.0.0.0`.
 - Reach admin UIs from a workstation via SSH tunnel or VPC-internal LB.
+
+### 1a. Admin UI (credential rotation / restart trigger)
+The `admin-ui` service under [`admin-ui/`](../admin-ui/README.md) provides a
+single surface to read/write credentials across `.env`, n8n, and Kong.
+
+- **Profile-gated**: only starts with `docker compose --profile admin up`. Base
+  and lite stacks don't include it.
+- **Loopback-only**: `127.0.0.1:7070`.
+- **HTTP Basic gate**: every `/api/*` request and the static UI itself
+  require `ADMIN_UI_USER` / `ADMIN_UI_PASSWORD` from `.env`. If either is
+  unset, the gate is disabled (dev-only; production deploys must set both).
+- **Container runs as root** and mounts `/var/run/docker.sock`. This is
+  root-on-host and is why the service is profile-gated + loopback-only.
+  Trivy DS-0002 is accepted in `.trivyignore` with rationale. Do **not**
+  expose this service beyond loopback without first splitting privileges
+  (non-root web process + narrow IPC to a root helper).
+- **No plaintext echo**: credential values are masked in every response
+  (`•••last4` for secrets). Audit rows store **sha256** of before/after
+  values, never the values.
+- **Atomic writes**: `.env` and `kong/kong.yml` are written via temp file +
+  `os.replace()`. Kong's `/config` endpoint validates before we touch disk,
+  so the on-disk file never diverges from runtime state.
+- **Rotate-with-healthcheck**: `POST /api/credentials/env/{name}/rotate`
+  writes the new value, runs the integration's health probe against the
+  fresh `.env`, and restores the old value if the probe fails.
+- **Append-only audit**: SQLite table `audit_events` in the
+  `admin_ui_data` volume. Actor comes from HTTP Basic, client IP from the
+  request. Actions logged: `create` / `update` / `delete` / `rotate` /
+  `rotate_failed` / `rollback_failed` / `restart` / `test`.
 
 ### 2. Kong runs DB-less (declarative)
 - `KONG_DATABASE: "off"`, `KONG_DECLARATIVE_CONFIG: /etc/kong/kong.yml`.
@@ -114,6 +144,9 @@ published.
       with dedicated volumes. Enable tiered storage for long retention.
 - [ ] Put Kong behind an L4/L7 LB and run ≥ 2 Kong replicas.
 - [ ] Enable SSO (OIDC/SAML) on n8n and Grafana; disable basic auth.
+- [ ] If enabling the admin profile, set `ADMIN_UI_USER` / `ADMIN_UI_PASSWORD`
+      (leaving either unset disables auth — intentional dev-only behavior),
+      and consider fronting with OIDC before exposing beyond loopback.
 - [ ] Wire `ALERTMANAGER_SLACK_WEBHOOK` and `ALERTMANAGER_PAGERDUTY_KEY`.
 - [ ] Run a load test against the target `5k req/s` SLO in the deployment
       checklist.
@@ -137,6 +170,8 @@ published.
 | PII egress to downstream                  | Redaction in Samsara parser |
 | Supply-chain CVEs                         | Trivy image scans in CI (fail on CRITICAL) |
 | Stolen n8n credentials at rest            | `N8N_ENCRYPTION_KEY` + Postgres at-rest encryption |
+| Unauthorized credential rotation via admin UI | HTTP Basic + profile-gated + loopback-only + append-only audit with sha256 hashes |
+| Bad rotation takes down integration       | Rotate-with-healthcheck: probe runs on fresh `.env`, auto-rollback on failure |
 
 ---
 
