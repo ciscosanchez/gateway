@@ -44,3 +44,7 @@ temp/
 *.tmp
 .cache/
 .abacusai/
+
+# Load test reports (reproducible via scripts/load-test.sh; the summary
+# that matters lives in docs/performance.md)
+load-test-*.md
