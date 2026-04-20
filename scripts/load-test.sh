@@ -142,7 +142,7 @@ trap revert_kong EXIT INT TERM
 info "bringing Kong up with loadtest overlay"
 docker compose "${COMPOSE_FILES[@]}" up -d --force-recreate kong >/dev/null 2>&1
 # Wait for healthy
-for i in $(seq 1 30); do
+for _ in $(seq 1 30); do
   hs=$(docker inspect gateway-kong --format '{{.State.Health.Status}}' 2>/dev/null || echo "")
   [ "$hs" = "healthy" ] && break
   sleep 2

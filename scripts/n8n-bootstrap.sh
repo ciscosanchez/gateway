@@ -81,10 +81,9 @@ done
 # ---------------------------------------------------------------------------
 # 2. Owner setup (first-run only)
 # ---------------------------------------------------------------------------
-# /rest/owner/setup returns 400 if already configured, so check first.
-setup_status=$(n8n_curl -o /dev/null -w '%{http_code}' "${N8N_INTERNAL_URL}/rest/owner/setup" || true)
-# If endpoint returns 200 GET, there's likely a check endpoint; simpler:
-# attempt login. 200 => owner exists; 401 => need setup.
+# /rest/owner/setup doesn't expose a clean check endpoint; the simpler
+# probe is to attempt login. 200 => owner exists and password matches;
+# 401 => owner missing OR password mismatch (we handle both below).
 login_probe=$(n8n_curl -o /dev/null -w '%{http_code}' \
   -X POST "${N8N_INTERNAL_URL}/rest/login" \
   -H "Content-Type: application/json" \
