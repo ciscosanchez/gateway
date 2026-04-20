@@ -71,8 +71,12 @@ docker compose up -d n8n n8n-worker
 
 ### 3. Import the workflow into n8n
 
-One-time: Workflows → Import from File →
-`workflows/alertmanager-to-zammad.json`. Activate it.
+Already handled by `./scripts/n8n-bootstrap.sh` (idempotent — re-run it if
+you skipped bootstrap or the workflow got deactivated). Manual fallback:
+Workflows → Import from File → `workflows/alertmanager-to-zammad.json`,
+then flip the Active toggle. Note that the n8n CLI's `import:workflow` +
+`update:workflow --active=true` leaves webhooks unregistered; only the UI
+path or the bootstrap script's REST PATCH actually wires the webhook.
 
 ### 4. Test end-to-end
 

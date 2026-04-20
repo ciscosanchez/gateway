@@ -159,8 +159,11 @@ These need confirmation from Unigroup before going live:
 
 ## Operations
 
-- **Hot-reload** the workflow: import `workflows/unigroup-outbound.json` into
-  n8n (Workflows → Import from File).
+- **Hot-reload** the workflow: re-run `./scripts/n8n-bootstrap.sh`
+  (idempotent — it PATCHes existing workflows in place, properly registers
+  webhooks, and handles credential ID injection). Manual fallback:
+  Workflows → Import from File → `workflows/unigroup-outbound.json`, flip
+  the Active toggle.
 - **Dry-run** with creds: set `UNIGROUP_CLIENT_ID` / `_SECRET`, produce a
   message to `unigroup-out` with a simple query (`{ __schema { queryType { name } } }`).
   Watch `unigroup-in`.

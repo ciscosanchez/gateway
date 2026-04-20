@@ -43,10 +43,18 @@ In n8n UI (`http://localhost:5678`):
 
 ### 4) Import and activate workflow (1 minute)
 
-1. Import `workflows/netsuite-create-sales-order.json`
-2. Open the NetSuite HTTP Request node
-3. Select credential `NetSuite TBA`
-4. Activate the workflow
+If you ran `./scripts/n8n-bootstrap.sh`, the workflow is already imported
+and active — you only need to attach the `NetSuite TBA` credential:
+
+1. Open the NetSuite HTTP Request node
+2. Select credential `NetSuite TBA`
+3. Save
+
+If bootstrap was skipped, do it manually via Workflows → Import from File
+→ `workflows/netsuite-create-sales-order.json`, then attach the credential
+as above, then flip Active (the UI path registers the webhook — the n8n
+CLI doesn't, so always prefer the UI or the bootstrap script over the
+CLI `update:workflow --active=true`).
 
 ### 5) Run smoke test (1 minute)
 

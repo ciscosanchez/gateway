@@ -1,15 +1,19 @@
 # Gateway — Integration Platform
 
-In-house integration platform: **Kong** (DB-less) → **Redpanda** (3-node Kafka cluster) → **n8n** (queue-mode workflow orchestration), backed by Postgres + Redis and a full Prometheus / Grafana / Loki observability stack.
+In-house integration platform: **Kong** (DB-less) → **Redpanda** (3-node Kafka cluster, 1 node by default) → **n8n** (single-process by default; queue mode + N workers under the `ha` profile), backed by Postgres + Redis and a full Prometheus / Grafana / Loki observability stack.
 
 **Integrations:** Samsara • NetSuite (OAuth1 TBA) • Unigroup Converge (OAuth2 + GraphQL) • WMS • Dispatch • Custom APIs
 
 **Credential management:** [`admin-ui/`](admin-ui/README.md) — unified read/write across `.env`, n8n credentials, and Kong consumers, with append-only audit + rotate-with-healthcheck + one-click restart. Profile-gated, loopback-only.
 
-> **Status:** HA-ready stack (3-broker Redpanda, queue-mode n8n workers, shared
-> rate-limit counters) that runs on a single host via `docker-compose` for
-> staging / small-scale production. **True HA requires ≥3 hosts**: on a single
-> host the box itself is a SPOF regardless of replication. Review
+> **Status:** HA-capable stack (3-broker Redpanda + queue-mode n8n workers +
+> shared rate-limit counters — all available under the `ha` profile) running
+> on a single host via `docker-compose` for staging / small-scale production.
+> **True HA requires ≥3 hosts**: on a single host the box itself is a SPOF
+> regardless of replication. **Measured baseline on the default (non-HA)
+> stack: ~240 rps sustained, p95 ≈ 0.55s, 0% errors** — see
+> [`docs/performance.md`](docs/performance.md) for the full run and
+> what to change to go higher. Review
 > [`docs/SECURITY.md`](docs/SECURITY.md) and
 > [`docs/DEPLOYMENT-CHECKLIST.md`](docs/DEPLOYMENT-CHECKLIST.md) before
 > pointing real traffic at any instance you don't control end-to-end.
@@ -25,6 +29,7 @@ In-house integration platform: **Kong** (DB-less) → **Redpanda** (3-node Kafka
 - [Scaling](#scaling)
 - [Security posture](#security-posture)
 - [Observability](#observability)
+- [Performance](#performance)
 - [Operations](#operations)
 - [Repo layout](#repo-layout)
 
@@ -63,8 +68,8 @@ graph LR
 Key properties:
 
 - **Kong is DB-less.** All routes, plugins, consumers, and API keys live in [`kong/kong.yml`](kong/kong.yml). There is no `kong-database` container.
-- **Redpanda is a 3-broker cluster.** Topics are created with `replication=3, min.insync.replicas=2, compression=zstd`.
-- **n8n runs in queue mode.** The main container handles webhooks/API; execution is dispatched via Redis to N worker containers that you can scale independently.
+- **Redpanda is a 3-broker cluster under `--profile ha`**, single-broker by default. Topics created under `ha` use `replication=3, min.insync.replicas=2, compression=zstd`; under the default profile they fall back to the broker count.
+- **n8n defaults to regular (single-process) mode.** The `ha` profile switches it to queue mode and starts N `n8n-worker` containers — execution is dispatched via Redis to the workers. Webhook registration also depends on this mode matching the number of running workers; the default (regular, no workers) is the simpler, reliably-boots-from-scratch path.
 - **Admin UIs are loopback-only.** Kong admin (8001/8002), n8n (5678), Redpanda Console (8080), Grafana (3002), Prometheus (9090), Alertmanager (9093), and Loki (3100) bind to `127.0.0.1` on the host. Only the public proxy on 8000/8443 listens on `0.0.0.0`.
 - **Every public route is auth'd and rate-limited.** `key-auth` + redis-backed `rate-limiting` + `request-size-limiting` + `cors` + security headers + `ip-restriction` + `correlation-id` are applied globally; Samsara additionally has an HMAC pre-function plugin.
 
@@ -73,8 +78,9 @@ Key properties:
 ## Quick start
 
 ```bash
-cp .env.example .env               # then replace every CHANGE_ME
+cp .env.example .env               # then replace every CHANGE_ME, including N8N_OWNER_*
 ./scripts/setup.sh                 # generates dev TLS cert, starts stack, creates topics
+./scripts/n8n-bootstrap.sh         # one-time: owner + kafka cred + workflow activation
 ./scripts/test.sh                  # smoke test
 ```
 
@@ -84,7 +90,15 @@ cp .env.example .env               # then replace every CHANGE_ME
 3. `docker compose up -d --wait`.
 4. Create Redpanda topics with production settings.
 
-To scale workers: `docker compose up -d --scale n8n-worker=4`.
+`n8n-bootstrap.sh` is idempotent and handles the parts n8n's CLI can't:
+owner account setup on first run, the Redpanda Kafka credential, import
+of every `workflows/*.json`, and webhook registration via REST (the CLI
+`import:workflow` / `update:workflow --active=true` path marks a workflow
+active in the DB but does **not** register its webhook — known n8n
+issue #21614). Safe to re-run: existing state is detected and reused.
+
+To scale n8n workers (HA): `docker compose --profile ha up -d --scale n8n-worker=4`.
+Worker containers only exist under the `ha` profile.
 
 Edit `kong/kong.yml` → apply with `./scripts/kong-setup.sh` (hot reload via loopback admin API).
 
@@ -122,8 +136,11 @@ Severity-gated + fingerprint-deduped so the helpdesk doesn't get noise.
 #    ZAMMAD_GROUP=Users
 #    ZAMMAD_CUSTOMER=info@goarmstrong.com
 # 3. Restart n8n so it picks up the env
-docker compose up -d n8n n8n-worker
-# 4. Import workflows/alertmanager-to-zammad.json in n8n UI, activate it
+docker compose up -d n8n                      # add n8n-worker under --profile ha
+# 4. The Alertmanager -> Zammad workflow is imported + activated by
+#    ./scripts/n8n-bootstrap.sh already. If you skipped bootstrap or
+#    the workflow got deactivated, re-run it:
+./scripts/n8n-bootstrap.sh
 ```
 
 Full walkthrough + end-to-end curl test + tuning guide in
@@ -139,7 +156,7 @@ Full walkthrough + end-to-end curl test + tuning guide in
 | Kong admin        | `127.0.0.1:8001`    | Admin API (tunnel to reach)            |
 | Kong manager      | `127.0.0.1:8002`    | Web UI                                 |
 | n8n main          | `127.0.0.1:5678`    | Workflow editor + webhook frontend     |
-| n8n-worker        | –                   | Queue workers (replicas configurable)  |
+| n8n-worker        | –                   | Queue workers (`--profile ha` only; replicas configurable) |
 | Postgres          | internal            | n8n state                              |
 | Redis             | internal            | Queue broker + Kong rate-limit counters|
 | Redpanda 0/1/2    | internal (`:9092` on node-0 loopback) | Kafka cluster            |
@@ -214,8 +231,8 @@ Defined in [`scripts/create-topics.sh`](scripts/create-topics.sh):
 ## Scaling
 
 - **Kong**: stateless in DB-less mode. Run ≥ 2 replicas behind an L4/L7 LB. `docker compose up -d --scale kong=N`.
-- **n8n workers**: `docker compose up -d --scale n8n-worker=N`. Each worker processes up to `--concurrency=10` jobs in parallel.
-- **Redpanda**: increase partition counts in `scripts/create-topics.sh` and scale brokers horizontally. `samsara-events` defaults to 24 partitions keyed on `vehicle_id`.
+- **n8n workers**: switch n8n to queue mode and start workers with `docker compose --profile ha up -d --scale n8n-worker=N`. Each worker processes up to `--concurrency=10` jobs in parallel. The measured default (single-process, `~240 rps`) scales roughly linearly per worker — see [`docs/performance.md`](docs/performance.md).
+- **Redpanda**: increase partition counts in `scripts/create-topics.sh` and scale brokers horizontally (`--profile ha` brings up 3 brokers; default runs 1). `samsara-events` defaults to 24 partitions keyed on `vehicle_id`.
 - **Postgres**: migrate to a managed service (RDS / CloudSQL) before significant write load.
 
 ---
@@ -248,6 +265,23 @@ Slack + PagerDuty receivers are wired in `config/alertmanager/alertmanager.yml`;
 
 ---
 
+## Performance
+
+Measured baseline for the default (single-broker Redpanda, single n8n process)
+stack on a Mac dev host:
+
+- **~240 req/s sustained**, 0% errors across 112,500 requests
+- **p50 ≈ 0.43s, p95 ≈ 0.55s, p99 ≈ 0.82s** at saturation
+- Ceiling is Little's Law (100 concurrent × 0.43s ≈ 232 rps), not container
+  CPU — Kong peaked at 14%, n8n at 4%, Redpanda <1%
+
+To go higher: `docker compose --profile ha up -d --scale n8n-worker=N`
+(queue mode + parallel workers). Full methodology, per-stage breakdown,
+and headroom guidance in [`docs/performance.md`](docs/performance.md).
+Reproduce with `./scripts/load-test.sh`.
+
+---
+
 ## Operations
 
 ```bash
@@ -269,8 +303,11 @@ docker exec gateway-redpanda-0 rpk group list --brokers redpanda-0:29092
 # Kong hot reload
 ./scripts/kong-setup.sh
 
-# Scale
-docker compose up -d --scale n8n-worker=4 --scale kong=2
+# Scale (n8n workers require --profile ha)
+docker compose --profile ha up -d --scale n8n-worker=4 --scale kong=2
+
+# Load-test the full path (curl -> Kong -> HMAC -> n8n -> Kafka -> 202)
+./scripts/load-test.sh     # see docs/performance.md for baseline numbers
 ```
 
 A cron template for daily backups is provided at `scripts/cron/gateway-crontab`.
@@ -309,6 +346,8 @@ A cron template for daily backups is provided at `scripts/cron/gateway-crontab`.
 │   └── backend/                             # FastAPI + SQLite audit + docker-socket restart
 ├── scripts/
 │   ├── setup.sh                     # first-time setup (TLS cert + up)
+│   ├── n8n-bootstrap.sh             # idempotent: owner + kafka cred + workflow activation via REST
+│   ├── load-test.sh                 # walk-up load test; generates docs/performance.md-style report
 │   ├── test.sh                      # smoke test (supports rate-limit probe when SMOKE_API_KEY set)
 │   ├── samsara-replay.sh            # sign + POST a canned Samsara payload through Kong
 │   ├── validate-config.sh           # preflight
@@ -321,6 +360,7 @@ A cron template for daily backups is provided at `scripts/cron/gateway-crontab`.
 │   ├── SECURITY.md                  # controls in place + pre-prod checklist
 │   ├── DEPLOYMENT-CHECKLIST.md
 │   ├── getting-started.md
+│   ├── performance.md               # measured baseline for the default stack
 │   ├── kong-plugins.md              # reference
 │   ├── netsuite-integration.md      # TBA + User Event inbound template
 │   ├── samsara-integration.md

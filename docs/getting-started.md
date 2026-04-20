@@ -9,8 +9,9 @@
 ## First-time setup
 
 ```bash
-cp .env.example .env           # then edit .env - replace every CHANGE_ME
+cp .env.example .env           # then edit .env - replace every CHANGE_ME (incl. N8N_OWNER_*)
 ./scripts/setup.sh             # generates dev TLS cert, starts stack, creates topics
+./scripts/n8n-bootstrap.sh     # one-time: owner + kafka cred + workflow activation
 ./scripts/test.sh              # smoke test
 ```
 
@@ -19,7 +20,18 @@ cp .env.example .env           # then edit .env - replace every CHANGE_ME
 1. Validates Docker is running.
 2. Generates a self-signed TLS cert into `config/kong/certs/` (dev only — replace in prod).
 3. Runs `docker compose up -d --wait`.
-4. Creates Redpanda topics with `replication_factor=3`, `min.insync.replicas=2`.
+4. Creates Redpanda topics with `replication_factor=3`, `min.insync.replicas=2` (falls back to broker count when running single-broker).
+
+`n8n-bootstrap.sh` handles the parts n8n's CLI can't do correctly on its own:
+
+1. Creates the owner account on first run (needs `N8N_OWNER_EMAIL` / `N8N_OWNER_PASSWORD` in `.env`).
+2. Creates the Redpanda Kafka credential that workflows reference.
+3. Imports every `workflows/*.json` and activates them via REST. n8n's CLI
+   `import:workflow` + `update:workflow --active=true` marks workflows
+   active in the DB but does NOT register webhooks — known n8n issue #21614.
+   The bootstrap script works around this by PATCHing each workflow through
+   `/rest/workflows/:id`, which replays the UI save logic and populates
+   `webhook_entity`. Re-runnable: existing state is detected and reused.
 
 ## Quick links
 
@@ -28,6 +40,7 @@ cp .env.example .env           # then edit .env - replace every CHANGE_ME
 - Admin UI (unified credential management + audit + rotate-with-healthcheck): [`admin-ui/README.md`](../admin-ui/README.md)
 - Zammad helpdesk wiring (critical alerts → tickets, with 5 false-positive filters): [`docs/alerting-to-zammad.md`](./alerting-to-zammad.md)
 - Replay a Samsara webhook through the full funnel locally: `./scripts/samsara-replay.sh` (see [Testing a route](#testing-a-route) below)
+- Load-test the full path end-to-end: `./scripts/load-test.sh` — walks 50 → 2000 req/s through the full plugin chain. Measured baseline: [`performance.md`](./performance.md).
 
 ## Architecture at a glance
 
@@ -105,12 +118,22 @@ curl -sk https://<host>/samsara \
 
 ## Scaling n8n workers
 
+The default stack runs n8n in **regular (single-process) mode** — no workers.
+This is the reliably-boots-from-scratch path; the measured ceiling is ~240
+rps (see [`performance.md`](./performance.md)). To go higher, switch to queue
+mode by enabling the `ha` profile:
+
 ```bash
-docker compose up -d --scale n8n-worker=4
+docker compose --profile ha up -d --scale n8n-worker=4
 ```
 
-Workers pull jobs from Redis (queue mode). The main `n8n` container only handles
-the web/API/webhook frontends.
+Under `ha`, workers pull jobs from Redis (queue mode) and the main `n8n`
+container only handles the web/API/webhook frontends — each worker adds
+parallel execution capacity.
+
+> The `n8n-worker` service only exists under `--profile ha`. If you run
+> plain `docker compose up -d --scale n8n-worker=N` without the profile,
+> compose will tell you the service is unknown.
 
 ## Backups
 
@@ -140,11 +163,13 @@ false-positive filtering):
    ZAMMAD_API_TOKEN=<token>
    ZAMMAD_GROUP=Users              # or whichever Zammad group tickets go in
    ZAMMAD_CUSTOMER=info@goarmstrong.com
-   docker compose up -d n8n n8n-worker
+   docker compose up -d n8n                 # add n8n-worker under --profile ha
    ```
-3. **Import the workflow** into n8n at `http://127.0.0.1:5678` via
-   *Workflows → Import from File* → `workflows/alertmanager-to-zammad.json`.
-   Activate it.
+3. **Workflow already imported + active** if you ran `./scripts/n8n-bootstrap.sh`.
+   If it got deactivated or you skipped bootstrap, re-run it (idempotent):
+   ```bash
+   ./scripts/n8n-bootstrap.sh
+   ```
 4. **Verify** with the curl test in
    [`docs/alerting-to-zammad.md`](./alerting-to-zammad.md) — first call
    creates a ticket, second call appends an article (dedup working).

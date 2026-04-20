@@ -18,7 +18,8 @@
 - [ ] Postgres on managed service with TLS, daily backups, PITR.
 - [ ] Redpanda 3-node cluster on 3 separate hosts (or Redpanda Cloud / MSK).
 - [ ] Redis reachable only on internal network.
-- [ ] n8n main + ≥ 2 workers (`docker compose up -d --scale n8n-worker=2+`).
+- [ ] n8n main + ≥ 2 workers in queue mode (`docker compose --profile ha up -d --scale n8n-worker=2+`). The `n8n-worker` service only exists under the `ha` profile; without it, n8n runs single-process (the default baseline of ~240 rps — see [`performance.md`](performance.md)).
+- [ ] On a fresh host: `./scripts/n8n-bootstrap.sh` has been run post-deploy so webhooks are actually registered. A workflow whose `active` flag is true in the DB but which has no row in `webhook_entity` silently 404s — this is how the n8n CLI leaves it.
 
 ### Security
 - [ ] Admin UIs (8001/8002/5678/8080/9090/9093/3002/3100) are not reachable from the public internet.
@@ -88,9 +89,10 @@ Rollback criteria (immediate):
 ## Scale up
 
 - More Kong: `docker compose up -d --scale kong=3` (behind the LB).
-- More n8n workers: `docker compose up -d --scale n8n-worker=N`.
+- More n8n workers: `docker compose --profile ha up -d --scale n8n-worker=N`. Measured default is ~240 rps single-process; each worker adds parallel execution. See [`performance.md`](performance.md).
 - More Kafka throughput: add a 4th/5th broker, then `rpk cluster reassign`.
 - Raise Redpanda memory: edit each `redpanda-N` service's `--memory` flag.
+- Load-test after any scale change: `./scripts/load-test.sh` generates a fresh report.
 
 ## Useful
 
