@@ -34,7 +34,10 @@ services:
         paths: ["/samsara"]
         methods: [POST, OPTIONS]
         protocols: [https]
-        strip_path: false
+        # strip_path must be true because the service URL already includes
+        # the full n8n webhook path (/webhook/samsara). With strip_path:false
+        # Kong would forward /webhook/samsara/samsara and n8n would 404.
+        strip_path: true
         preserve_host: false
         https_redirect_status_code: 301
         tags: [samsara]
@@ -244,9 +247,11 @@ plugins:
 
   # IP allowlist - replace with real CIDRs per integration.
   # Comment out if you truly need a fully public endpoint.
+  # 127.0.0.1/32 covers loopback tooling (smoke tests, local curl).
   - name: ip-restriction
     config:
       allow:
+        - "127.0.0.1/32"
         - "10.0.0.0/8"
         - "172.16.0.0/12"
         - "192.168.0.0/16"

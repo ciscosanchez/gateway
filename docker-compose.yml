@@ -115,15 +115,13 @@ services:
       - redpanda
       - start
       - --node-id=0
-      - --seeds=redpanda-0:33145,redpanda-1:33145,redpanda-2:33145
+      - --seeds=redpanda-0:33145
       - --kafka-addr=INTERNAL://0.0.0.0:29092,EXTERNAL://0.0.0.0:9092
       - --advertise-kafka-addr=INTERNAL://redpanda-0:29092,EXTERNAL://localhost:9092
       - --rpc-addr=0.0.0.0:33145
       - --advertise-rpc-addr=redpanda-0:33145
       - --pandaproxy-addr=INTERNAL://0.0.0.0:28082
       - --advertise-pandaproxy-addr=INTERNAL://redpanda-0:28082
-      - --set=redpanda.default_topic_replications=3
-      - --set=redpanda.auto_create_topics_enabled=false
       - --smp=1
       - --memory=1G
     volumes:
@@ -244,8 +242,13 @@ services:
       KONG_ADMIN_GUI_LISTEN: "0.0.0.0:8002"
       # Proxy listeners (HTTP redirects to HTTPS via route-level plugin)
       KONG_PROXY_LISTEN: "0.0.0.0:8000, 0.0.0.0:8443 ssl http2"
-      # Allow our pre-function plugin to use resty libs
+      # Pre-function plugins in kong.yml need resty.openssl.hmac, resty.string,
+      # os.getenv, and bit ops. The sandbox allows each when explicitly listed
+      # below; os.getenv additionally needs KONG_NGINX_MAIN_ENV (further down)
+      # to expose the env var to nginx workers. Keep sandbox ON in production.
       KONG_UNTRUSTED_LUA: "sandbox"
+      KONG_UNTRUSTED_LUA_SANDBOX_REQUIRES: "resty.openssl.hmac,resty.string"
+      KONG_UNTRUSTED_LUA_SANDBOX_ENVIRONMENT: "os.getenv,bit.bor,bit.bxor"
       KONG_PLUGINS: "bundled"
       # Redis for shared rate-limit counters
       KONG_NGINX_WORKER_PROCESSES: "auto"
@@ -261,6 +264,12 @@ services:
       # Tuning
       KONG_NGINX_HTTP_CLIENT_MAX_BODY_SIZE: "10m"
       KONG_NGINX_HTTP_CLIENT_BODY_BUFFER_SIZE: "2m"
+      # Secrets consumed by the declarative pre-function plugins in kong.yml
+      # (HMAC verification). Must be readable via os.getenv from Lua.
+      # nginx workers don't inherit env by default — KONG_NGINX_MAIN_ENV
+      # tells the main nginx.conf to expose these vars to the worker envs.
+      SAMSARA_WEBHOOK_SECRET: ${SAMSARA_WEBHOOK_SECRET}
+      KONG_NGINX_MAIN_ENV: "SAMSARA_WEBHOOK_SECRET"
     volumes:
       - ./kong/kong.yml:/etc/kong/kong.yml:ro
       - ./config/kong/certs:/etc/kong/certs:ro
@@ -294,8 +303,10 @@ services:
     container_name: gateway-n8n
     <<: *default-restart
     environment:
-      # Queue mode
-      EXECUTIONS_MODE: queue
+      # Queue mode requires n8n-worker (ha profile). Without a worker,
+      # webhook registration doesn't complete even though the workflow
+      # reports active. Run in regular mode unless you also start workers.
+      EXECUTIONS_MODE: regular
       QUEUE_BULL_REDIS_HOST: redis
       QUEUE_BULL_REDIS_PORT: "6379"
       QUEUE_BULL_REDIS_PASSWORD: ${REDIS_PASSWORD}
