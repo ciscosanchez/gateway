@@ -23,6 +23,7 @@ In-house integration platform: **Kong** (DB-less) → **Redpanda** (3-node Kafka
 ## Contents
 
 - [Architecture](#architecture)
+- [Integration pattern](#integration-pattern)
 - [Quick start](#quick-start)
 - [Services](#services)
 - [Configuration](#configuration)
@@ -72,6 +73,56 @@ Key properties:
 - **n8n defaults to regular (single-process) mode.** The `ha` profile switches it to queue mode and starts N `n8n-worker` containers — execution is dispatched via Redis to the workers. Webhook registration also depends on this mode matching the number of running workers; the default (regular, no workers) is the simpler, reliably-boots-from-scratch path.
 - **Admin UIs are loopback-only.** Kong admin (8001/8002), n8n (5678), Redpanda Console (8080), Grafana (3002), Prometheus (9090), Alertmanager (9093), and Loki (3100) bind to `127.0.0.1` on the host. Only the public proxy on 8000/8443 listens on `0.0.0.0`.
 - **Every public route is auth'd and rate-limited.** `key-auth` + redis-backed `rate-limiting` + `request-size-limiting` + `cors` + security headers + `ip-restriction` + `correlation-id` are applied globally; Samsara additionally has an HMAC pre-function plugin.
+
+---
+
+## Integration pattern
+
+Every integration in this stack follows the same two-sided pattern regardless of what systems are involved:
+
+```
+                    INBOUND                              OUTBOUND
+                                                                        
+  External ──HTTPS──▶ Kong ──▶ n8n ──▶ Redpanda ──▶ n8n ──▶ External
+  System    (auth +         (validate    topic      (consume    System
+            rate-limit)      + route)               + call)
+```
+
+**Inbound** (external system → gateway):
+1. External system POSTs a webhook to Kong over HTTPS with an API key.
+2. Kong authenticates the key, rate-limits, stamps a correlation ID, and forwards to n8n.
+3. An n8n workflow validates the payload, determines the correct Redpanda topic, and publishes the event.
+4. The external system receives an immediate `HTTP 202` — its job is done.
+
+**Outbound** (gateway → external system):
+1. Any internal workflow publishes a message to a `*-out` Redpanda topic.
+2. A dedicated n8n consumer workflow wakes up, transforms the message, and calls the external system's REST API.
+3. On transient failure (5xx, 429) the workflow retries with exponential backoff. On exhaustion the message goes to `errors-dlq`.
+4. On success a confirmation is published to a `*-updates` topic.
+
+**Why Redpanda sits in the middle:**
+Systems publish to the bus and subscribe from the bus — they never call each other directly. This means:
+- Adding a new consumer (e.g. a 3PL reading from `tai-bills`) requires one new workflow. Tai is unchanged.
+- If a downstream system is down, events queue in Redpanda (up to their retention window) and are processed when it recovers. Nothing is lost.
+- Any topic can be replayed from the beginning for backfill, debugging, or onboarding a new consumer.
+
+**Current integrations and their topics:**
+
+| Integration | Inbound topics | Outbound topic | Confirmation |
+|---|---|---|---|
+| Tai TMS | `tai-bills`, `tai-invoices`, `tai-shipments`, `tai-customers`, `tai-carriers` | `tai-out` | `tai-updates` |
+| Samsara | `samsara-events` | — | — |
+| NetSuite | `netsuite-updates` | `orders` | — |
+| WMS | — | `wms-out` | `wms-updates` |
+| Dispatch | — | `dispatch-out` | `dispatch-updates` |
+| Unigroup Converge | — | `unigroup-out` | `unigroup-in` |
+
+**Adding a new integration** follows the same steps every time:
+1. Add a Kong service + route + consumer to `kong/kong.yml`, run `./scripts/kong-setup.sh`.
+2. Add topics to `scripts/create-topics.sh`, run it.
+3. Add env vars to `.env` and `admin-ui/backend/integrations.py` (one block covers env, Kong, and health probe).
+4. Write an inbound n8n workflow (webhook → validate → publish) and/or outbound workflow (consume → call → confirm).
+5. Import via `./scripts/n8n-bootstrap.sh`.
 
 ---
 
