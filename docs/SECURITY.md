@@ -117,10 +117,16 @@ published.
 - `gitleaks` secret scan
 - Trivy config scan (CRITICAL/HIGH fails)
 - Trivy filesystem scan (CRITICAL/HIGH fails)
-- Trivy image scans for every image (CRITICAL fails)
+- Trivy image scans for every image in `docker-compose.yml` (CRITICAL fixable fails)
 - YAML lint, shellcheck, JSON parse on all workflows
 - Kong declarative config parsed by Kong itself
 - Smoke test brings the stack up and verifies admin endpoints are healthy
+
+The image scan list is derived live from `docker-compose.yml` — bumping an image
+version there is the only step needed; the CI scan follows automatically.
+Accepted risks (upstream images we don't build) live in `.trivyignore` with
+rationale. See [`docs/ci-security-scanning.md`](ci-security-scanning.md) for the
+full CVE management runbook and quarterly review process.
 
 ---
 
