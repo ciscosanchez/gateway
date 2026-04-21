@@ -66,6 +66,13 @@ CVE-2023-24538        # older Go text/template (promtail)
 CVE-2023-24540        # older Go text/template (promtail)
 CVE-2023-36665        # (promtail)
 
+# --- go-git (Redpanda Console) ---
+# CVE-2025-21613: argument injection via URL in go-git; fixed in go-git 5.13.0.
+# Redpanda Console (redpandadata/console) embeds go-git as a transitive dep but
+# does not expose any UI path that invokes git clone/fetch with user-controlled
+# URLs. Console is bound to 127.0.0.1:8080, reachable only via SSH tunnel.
+CVE-2025-21613         # go-git arg injection; fixed in 5.13.0; console doesn't use git URLs
+
 # --- OpenSSL (Redpanda + other Alpine/Debian base images) ---
 # CVE-2025-15467: OpenSSL RCE fixed in 3.0.18 / 3.3.6. The upstream images
 # (Redpanda v24.1.7, and any Debian-based images still on older OpenSSL) have
