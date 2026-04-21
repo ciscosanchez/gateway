@@ -54,7 +54,7 @@
       },
       {
         "id": 4,
-        "title": "Redpanda Throughput (msg/s)",
+        "title": "Redpanda Throughput (msg/s) — All Topics",
         "type": "graph",
         "targets": [
           {
@@ -66,7 +66,7 @@
       },
       {
         "id": 5,
-        "title": "Redpanda Consumer Lag",
+        "title": "Redpanda Consumer Lag — All Topics",
         "type": "graph",
         "targets": [
           {
@@ -75,6 +75,111 @@
           }
         ],
         "gridPos": {"h": 8, "w": 24, "x": 0, "y": 16}
+      },
+
+      {
+        "id": 10,
+        "title": "Samsara TMS",
+        "type": "row",
+        "collapsed": false,
+        "gridPos": {"h": 1, "w": 24, "x": 0, "y": 24}
+      },
+      {
+        "id": 11,
+        "title": "Samsara — Inbound Webhook Rate (req/s)",
+        "type": "graph",
+        "targets": [
+          {
+            "expr": "rate(kong_http_requests_total{route=~\"samsara.*\"}[5m])",
+            "legendFormat": "{{route}} {{code}}"
+          }
+        ],
+        "gridPos": {"h": 8, "w": 12, "x": 0, "y": 25}
+      },
+      {
+        "id": 12,
+        "title": "Samsara — Topic Throughput (msg/s)",
+        "type": "graph",
+        "targets": [
+          {
+            "expr": "rate(redpanda_kafka_request_bytes_total{topic=~\"samsara.*\"}[5m])",
+            "legendFormat": "{{topic}}"
+          }
+        ],
+        "gridPos": {"h": 8, "w": 12, "x": 12, "y": 25}
+      },
+      {
+        "id": 13,
+        "title": "Samsara — Consumer Lag",
+        "type": "graph",
+        "targets": [
+          {
+            "expr": "redpanda_kafka_consumer_lag{topic=~\"samsara.*\"}",
+            "legendFormat": "{{group}} - {{topic}}"
+          }
+        ],
+        "gridPos": {"h": 8, "w": 24, "x": 0, "y": 33}
+      },
+
+      {
+        "id": 20,
+        "title": "Tai TMS",
+        "type": "row",
+        "collapsed": false,
+        "gridPos": {"h": 1, "w": 24, "x": 0, "y": 41}
+      },
+      {
+        "id": 21,
+        "title": "Tai — Inbound Webhook Rate (req/s)",
+        "type": "graph",
+        "targets": [
+          {
+            "expr": "rate(kong_http_requests_total{route=~\"tai.*\"}[5m])",
+            "legendFormat": "{{route}} {{code}}"
+          }
+        ],
+        "gridPos": {"h": 8, "w": 12, "x": 0, "y": 42}
+      },
+      {
+        "id": 22,
+        "title": "Tai — Topic Throughput (msg/s)",
+        "type": "graph",
+        "targets": [
+          {
+            "expr": "rate(redpanda_kafka_request_bytes_total{topic=~\"tai-.*\"}[5m])",
+            "legendFormat": "{{topic}}"
+          }
+        ],
+        "gridPos": {"h": 8, "w": 12, "x": 12, "y": 42}
+      },
+      {
+        "id": 23,
+        "title": "Tai — Consumer Lag",
+        "type": "graph",
+        "targets": [
+          {
+            "expr": "redpanda_kafka_consumer_lag{topic=~\"tai-.*\"}",
+            "legendFormat": "{{group}} - {{topic}}"
+          }
+        ],
+        "gridPos": {"h": 8, "w": 12, "x": 0, "y": 50}
+      },
+      {
+        "id": 24,
+        "title": "Tai — Outbound Error Rate",
+        "type": "graph",
+        "description": "n8n workflow errors for tai-out and tai-updates consumers. Non-zero means messages are landing in errors-dlq.",
+        "targets": [
+          {
+            "expr": "rate(kong_http_requests_total{route=~\"tai.*\", code=~\"[45]..\"}[5m])",
+            "legendFormat": "Kong {{code}} - {{route}}"
+          },
+          {
+            "expr": "redpanda_kafka_consumer_lag{topic=\"errors-dlq\"}",
+            "legendFormat": "DLQ lag"
+          }
+        ],
+        "gridPos": {"h": 8, "w": 12, "x": 12, "y": 50}
       }
     ],
     "refresh": "10s",
