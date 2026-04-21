@@ -6,7 +6,7 @@
 - [ ] `.env` populated with real secrets pulled from the secret manager (no `CHANGE_ME`/`REPLACE_ME`).
 - [ ] `config/kong/certs/server.{crt,key}` are production certs (not self-signed).
 - [ ] `kong/kong.yml`:
-  - [ ] Every `REPLACE_ME_*_api_key` replaced with a rotated key.
+  - [ ] Every `REPLACE_ME_*_api_key` replaced with a rotated key (including `tai-client` key which must match `TAI_INBOUND_API_KEY`).
   - [ ] `ip-restriction.allow` pinned to real caller CIDRs.
   - [ ] `cors.origins` pinned to real origins.
 - [ ] `ALERTMANAGER_SLACK_WEBHOOK` and `ALERTMANAGER_PAGERDUTY_KEY` set.

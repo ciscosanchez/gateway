@@ -56,7 +56,7 @@
     },
     {
       "parameters": {
-        "functionCode": "const resp = $input.item.json;\nconst ctx  = $('Validate + Resolve').item.json;\nreturn { json: {\n  success: true,\n  workflow: 'dispatch-outbound',\n  operation: ctx.operation,\n  correlation_id: ctx.correlation_id,\n  response: resp,\n  timestamp: new Date().toISOString()\n}};"
+        "functionCode": "const resp = $input.item.json;\nconst ctx  = $('Validate + Resolve').item.json;\nreturn [{ json: {\n  success: true,\n  workflow: 'dispatch-outbound',\n  operation: ctx.operation,\n  correlation_id: ctx.correlation_id,\n  response: resp,\n  timestamp: new Date().toISOString()\n}}];"
       },
       "name": "Format Success",
       "type": "n8n-nodes-base.function",
@@ -68,7 +68,7 @@
         "operation": "sendMessage",
         "topic": "dispatch-updates",
         "sendInputData": false,
-        "jsonMessage": "={{ JSON.stringify($json) }}",
+        "message": "={{ JSON.stringify($json) }}",
         "options": { "acks": -1, "compression": "gzip" }
       },
       "name": "Confirm to Kafka (dispatch-updates)",
@@ -79,7 +79,7 @@
     },
     {
       "parameters": {
-        "functionCode": "const error = $input.item.json;\nconst ctx = ($('Validate + Resolve').item || {}).json || {};\nconst retryCount = ctx.retry_count || 0;\nconst maxRetries = ctx.max_retries || 5;\nconst status = error.status || error.statusCode || (error.response && error.response.status) || 0;\nconst isTransient = status === 429 || (status >= 500 && status < 600);\nconst shouldRetry = isTransient && retryCount < maxRetries;\nreturn { json: {\n  workflow: 'dispatch-outbound',\n  operation: ctx.operation,\n  correlation_id: ctx.correlation_id,\n  error_message: error.message || 'unknown error',\n  status,\n  retry_count: retryCount,\n  max_retries: maxRetries,\n  should_retry: shouldRetry,\n  retry_delay_ms: Math.min(60000, 1000 * Math.pow(2, retryCount)) + Math.floor(Math.random() * 500),\n  requeue_payload: { ...(ctx.original || {}), _retry_count: retryCount + 1 },\n  timestamp: new Date().toISOString()\n}};"
+        "functionCode": "const error = $input.item.json;\nconst ctx = ($('Validate + Resolve').item || {}).json || {};\nconst retryCount = ctx.retry_count || 0;\nconst maxRetries = ctx.max_retries || 5;\nconst status = error.status || error.statusCode || (error.response && error.response.status) || 0;\nconst isTransient = status === 429 || (status >= 500 && status < 600);\nconst shouldRetry = isTransient && retryCount < maxRetries;\nreturn [{ json: {\n  workflow: 'dispatch-outbound',\n  operation: ctx.operation,\n  correlation_id: ctx.correlation_id,\n  error_message: error.message || 'unknown error',\n  status,\n  retry_count: retryCount,\n  max_retries: maxRetries,\n  should_retry: shouldRetry,\n  retry_delay_ms: Math.min(60000, 1000 * Math.pow(2, retryCount)) + Math.floor(Math.random() * 500),\n  requeue_payload: { ...(ctx.original || {}), _retry_count: retryCount + 1 },\n  timestamp: new Date().toISOString()\n}}];"
       },
       "name": "Handle Error",
       "type": "n8n-nodes-base.function",
@@ -107,7 +107,7 @@
         "operation": "sendMessage",
         "topic": "dispatch-out",
         "sendInputData": false,
-        "jsonMessage": "={{ JSON.stringify($json.requeue_payload) }}",
+        "message": "={{ JSON.stringify($json.requeue_payload) }}",
         "options": { "acks": -1, "compression": "gzip" }
       },
       "name": "Requeue on dispatch-out",
@@ -121,7 +121,7 @@
         "operation": "sendMessage",
         "topic": "errors-dlq",
         "sendInputData": false,
-        "jsonMessage": "={{ JSON.stringify($json) }}",
+        "message": "={{ JSON.stringify($json) }}",
         "options": { "acks": -1, "compression": "gzip" }
       },
       "name": "Send to DLQ",

@@ -2,7 +2,7 @@
 
 In-house integration platform: **Kong** (DB-less) → **Redpanda** (3-node Kafka cluster, 1 node by default) → **n8n** (single-process by default; queue mode + N workers under the `ha` profile), backed by Postgres + Redis and a full Prometheus / Grafana / Loki observability stack.
 
-**Integrations:** Samsara • NetSuite (OAuth1 TBA) • Unigroup Converge (OAuth2 + GraphQL) • WMS • Dispatch • Custom APIs
+**Integrations:** Samsara • NetSuite (OAuth1 TBA) • Unigroup Converge (OAuth2 + GraphQL) • WMS • Dispatch • Tai TMS • Custom APIs
 
 **Credential management:** [`admin-ui/`](admin-ui/README.md) — unified read/write across `.env`, n8n credentials, and Kong consumers, with append-only audit + rotate-with-healthcheck + one-click restart. Profile-gated, loopback-only.
 
@@ -224,6 +224,13 @@ Defined in [`scripts/create-topics.sh`](scripts/create-topics.sh):
 | `wms-updates`      | 6          | 7d        | WMS responses                        |
 | `dispatch-out`     | 6          | 30d       | Messages for Dispatch outbound       |
 | `dispatch-updates` | 6          | 7d        | Dispatch responses                   |
+| `tai-bills`        | 6          | 30d       | Tai inbound bill events              |
+| `tai-invoices`     | 6          | 30d       | Tai inbound invoice events           |
+| `tai-shipments`    | 12         | 7d        | Tai inbound shipment events          |
+| `tai-customers`    | 3          | 30d       | Tai customer entity changes          |
+| `tai-carriers`     | 3          | 30d       | Tai carrier entity changes           |
+| `tai-out`          | 6          | 30d       | Outbound queue → Tai REST API        |
+| `tai-updates`      | 6          | 7d        | Tai API call confirmations           |
 | `errors-dlq`       | 3          | 90d       | Dead-letter queue, forensic          |
 
 ---

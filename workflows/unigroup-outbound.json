@@ -147,7 +147,7 @@
         "operation": "sendMessage",
         "topic": "unigroup-in",
         "sendInputData": false,
-        "jsonMessage": "={{ JSON.stringify($json) }}",
+        "message": "={{ JSON.stringify($json) }}",
         "options": { "acks": -1, "compression": "gzip" }
       },
       "name": "Confirm to Kafka (unigroup-in)",
@@ -195,7 +195,7 @@
         "operation": "sendMessage",
         "topic": "unigroup-out",
         "sendInputData": false,
-        "jsonMessage": "={{ JSON.stringify($json.requeue_payload) }}",
+        "message": "={{ JSON.stringify($json.requeue_payload) }}",
         "options": { "acks": -1, "compression": "gzip" }
       },
       "name": "Requeue on unigroup-out",
@@ -211,7 +211,7 @@
         "operation": "sendMessage",
         "topic": "errors-dlq",
         "sendInputData": false,
-        "jsonMessage": "={{ JSON.stringify($json) }}",
+        "message": "={{ JSON.stringify($json) }}",
         "options": { "acks": -1, "compression": "gzip" }
       },
       "name": "Send to DLQ",

@@ -16,7 +16,7 @@
     },
     {
       "parameters": {
-        "functionCode": "// Extract and transform Samsara data\nconst samsaraEvent = $input.item.json;\n\n// Transform to internal format\nconst transformedData = {\n  eventType: samsaraEvent.eventType,\n  vehicleId: samsaraEvent.vehicle?.id,\n  location: {\n    lat: samsaraEvent.location?.latitude,\n    lng: samsaraEvent.location?.longitude\n  },\n  timestamp: samsaraEvent.time,\n  originalPayload: samsaraEvent\n};\n\nreturn { json: transformedData };"
+        "functionCode": "// Extract and transform Samsara data\nconst samsaraEvent = $input.item.json;\n\n// Transform to internal format\nconst transformedData = {\n  eventType: samsaraEvent.eventType,\n  vehicleId: samsaraEvent.vehicle?.id,\n  location: {\n    lat: samsaraEvent.location?.latitude,\n    lng: samsaraEvent.location?.longitude\n  },\n  timestamp: samsaraEvent.time,\n  originalPayload: samsaraEvent\n};\n\nreturn [{ json: transformedData }];"
       },
       "name": "Transform Data",
       "type": "n8n-nodes-base.function",

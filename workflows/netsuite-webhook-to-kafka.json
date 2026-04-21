@@ -18,7 +18,7 @@
     },
     {
       "parameters": {
-        "functionCode": "// Validate + normalize the payload posted by the NetSuite User Event\n// script (see docs/netsuite-integration.md). Kong has already enforced\n// key-auth and stripped the X-API-Key header (hide_credentials=true), so\n// we do NOT re-validate the key here. We DO validate the payload shape so\n// a malformed push doesn't pollute Kafka.\nconst body = $input.item.json;\n\nconst required = ['source', 'event_type', 'record_type', 'id'];\nfor (const f of required) {\n  if (!body[f]) {\n    const err = new Error(`missing required field: ${f}`);\n    err.statusCode = 400;\n    throw err;\n  }\n}\nif (body.source !== 'netsuite') {\n  const err = new Error(`unexpected source: ${body.source}`);\n  err.statusCode = 400;\n  throw err;\n}\n\n// Route by record type. Sales orders flow into the main orders topic so\n// downstream consumers (WMS, Unigroup booking, dispatch) can subscribe\n// without caring about the origin system. Inventory-adjacent types share\n// the inventory topic. Everything else lands on netsuite-updates as a\n// generic change feed.\nconst TYPE_ROUTING = {\n  salesorder:          'orders',\n  inventoryadjustment: 'inventory',\n  itemreceipt:         'inventory',\n  itemfulfillment:     'inventory'\n};\nconst topic = TYPE_ROUTING[body.record_type] || 'netsuite-updates';\n\nconst event = {\n  source:      'netsuite',\n  event_type:  body.event_type,       // 'create' | 'edit'\n  record_type: body.record_type,\n  id:          String(body.id),\n  tran_id:     body.tran_id || null,\n  entity:      body.entity || null,\n  total:       body.total || null,\n  status:      body.status || null,\n  timestamp:   body.timestamp || new Date().toISOString(),\n  received_at: new Date().toISOString(),\n  correlation_id: $('NetSuite Webhook').first().json.headers?.['x-request-id'] || $execution.id,\n  // Partition key - keep ordering per-record across edits\n  _key: `netsuite:${body.record_type}:${body.id}`,\n  _topic: topic\n};\n\nreturn { json: event };"
+        "functionCode": "// Validate + normalize the payload posted by the NetSuite User Event\n// script (see docs/netsuite-integration.md). Kong has already enforced\n// key-auth and stripped the X-API-Key header (hide_credentials=true), so\n// we do NOT re-validate the key here. We DO validate the payload shape so\n// a malformed push doesn't pollute Kafka.\nconst body = $input.item.json;\n\nconst required = ['source', 'event_type', 'record_type', 'id'];\nfor (const f of required) {\n  if (!body[f]) {\n    const err = new Error(`missing required field: ${f}`);\n    err.statusCode = 400;\n    throw err;\n  }\n}\nif (body.source !== 'netsuite') {\n  const err = new Error(`unexpected source: ${body.source}`);\n  err.statusCode = 400;\n  throw err;\n}\n\n// Route by record type. Sales orders flow into the main orders topic so\n// downstream consumers (WMS, Unigroup booking, dispatch) can subscribe\n// without caring about the origin system. Inventory-adjacent types share\n// the inventory topic. Everything else lands on netsuite-updates as a\n// generic change feed.\nconst TYPE_ROUTING = {\n  salesorder:          'orders',\n  inventoryadjustment: 'inventory',\n  itemreceipt:         'inventory',\n  itemfulfillment:     'inventory'\n};\nconst topic = TYPE_ROUTING[body.record_type] || 'netsuite-updates';\n\nconst event = {\n  source:      'netsuite',\n  event_type:  body.event_type,       // 'create' | 'edit'\n  record_type: body.record_type,\n  id:          String(body.id),\n  tran_id:     body.tran_id || null,\n  entity:      body.entity || null,\n  total:       body.total || null,\n  status:      body.status || null,\n  timestamp:   body.timestamp || new Date().toISOString(),\n  received_at: new Date().toISOString(),\n  correlation_id: $('NetSuite Webhook').first().json.headers?.['x-request-id'] || $execution.id,\n  // Partition key - keep ordering per-record across edits\n  _key: `netsuite:${body.record_type}:${body.id}`,\n  _topic: topic\n};\n\nreturn [{ json: event }];"
       },
       "name": "Validate + Route",
       "type": "n8n-nodes-base.function",
@@ -30,7 +30,7 @@
         "operation": "sendMessage",
         "topic": "={{ $json._topic }}",
         "sendInputData": false,
-        "jsonMessage": "={{ JSON.stringify($json) }}",
+        "message": "={{ JSON.stringify($json) }}",
         "options": {
           "acks": -1,
           "compression": "gzip",
@@ -81,7 +81,7 @@
         "operation": "sendMessage",
         "topic": "errors-dlq",
         "sendInputData": false,
-        "jsonMessage": "={{ JSON.stringify($json) }}",
+        "message": "={{ JSON.stringify($json) }}",
         "options": {
           "acks": -1,
           "compression": "gzip"

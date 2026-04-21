@@ -1,0 +1,160 @@
+{
+  "name": "Tai - Outbound (sync status + payments)",
+  "nodes": [
+    {
+      "parameters": {
+        "topic": "tai-out",
+        "groupId": "tai-outbound-consumer",
+        "brokers": "redpanda-0:29092,redpanda-1:29092,redpanda-2:29092",
+        "options": {
+          "allowTopicCreation": false,
+          "autoCommit": false,
+          "maxInFlightRequests": 1,
+          "sessionTimeout": 30000,
+          "heartbeatInterval": 3000
+        }
+      },
+      "name": "Kafka Trigger - tai-out",
+      "type": "n8n-nodes-base.kafkaTrigger",
+      "typeVersion": 1,
+      "position": [220, 320]
+    },
+    {
+      "parameters": {
+        "functionCode": "// Build an outbound Tai API request from a tai-out Kafka message.\n// Message envelope:\n//   {\n//     operation:      'confirm_bill_sync' | 'confirm_invoice_sync' |\n//                     'post_invoice_payment' | 'post_bill_payment',\n//     payload:        { billId|invoiceId, status, transactionId, ... },\n//     correlation_id: '...',\n//     _retry_count:   0\n//   }\n//\n// Auth: Tai uses the API key in the Authorization header as 'ApiKey <key>'.\n// Verify the exact header name against /PublicApi/swagger on your TMS instance\n// if calls return 401.\nconst kafkaMessage = $input.item.json;\nconst msg = typeof kafkaMessage.value === 'string' ? JSON.parse(kafkaMessage.value) : kafkaMessage.value;\nif (!msg || !msg.operation) throw new Error('invalid tai-out message: missing operation');\n\nconst baseUrl = $env.TAI_API_URL;\nconst apiKey  = $env.TAI_API_KEY;\nif (!baseUrl || baseUrl === 'CHANGE_ME') throw new Error('TAI_API_URL not configured');\nif (!apiKey  || apiKey  === 'CHANGE_ME') throw new Error('TAI_API_KEY not configured');\n\nconst OPS = {\n  confirm_bill_sync:     { method: 'PUT',  path: '/Accounting/v2/Bills/Sync' },\n  confirm_invoice_sync:  { method: 'PUT',  path: '/Accounting/v2/Invoices/Sync' },\n  // Payment posting paths — verify exact paths against Tai Swagger before use\n  post_invoice_payment:  { method: 'POST', path: '/Accounting/v2/InvoicePayments' },\n  post_bill_payment:     { method: 'POST', path: '/Accounting/v2/BillPayments' },\n};\nconst op = OPS[msg.operation];\nif (!op) throw new Error(`unsupported Tai operation: ${msg.operation}`);\n\nreturn {\n  json: {\n    url:            `${baseUrl}${op.path}`,\n    method:         op.method,\n    body:           msg.payload || {},\n    correlation_id: msg.correlation_id || $execution.id,\n    retry_count:    msg._retry_count || 0,\n    max_retries:    5,\n    operation:      msg.operation,\n    original:       msg,\n    _apiKey:        apiKey\n  }\n};"
+      },
+      "name": "Validate + Resolve",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [440, 320]
+    },
+    {
+      "parameters": {
+        "method": "={{ $json.method }}",
+        "url":    "={{ $json.url }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Authorization", "value": "={{ 'ApiKey ' + $json._apiKey }}" },
+            { "name": "Content-Type",  "value": "application/json" },
+            { "name": "Accept",        "value": "application/json" },
+            { "name": "X-Request-Id",  "value": "={{ $json.correlation_id }}" }
+          ]
+        },
+        "sendBody":    true,
+        "specifyBody": "json",
+        "jsonBody":    "={{ JSON.stringify($json.body) }}",
+        "options": {
+          "timeout": 30000,
+          "retry": { "maxTries": 2, "waitBetweenTries": 2000 }
+        }
+      },
+      "name": "Call Tai API",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [660, 320]
+    },
+    {
+      "parameters": {
+        "functionCode": "const resp = $input.item.json;\nconst ctx  = $('Validate + Resolve').item.json;\nreturn [{ json: {\n  success: true,\n  workflow: 'tai-outbound',\n  operation: ctx.operation,\n  correlation_id: ctx.correlation_id,\n  response: resp,\n  timestamp: new Date().toISOString()\n}}];"
+      },
+      "name": "Format Success",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [880, 320]
+    },
+    {
+      "parameters": {
+        "operation": "sendMessage",
+        "topic": "tai-updates",
+        "sendInputData": false,
+        "message": "={{ JSON.stringify($json) }}",
+        "options": { "acks": -1, "compression": "gzip" }
+      },
+      "name": "Confirm to Kafka (tai-updates)",
+      "type": "n8n-nodes-base.kafka",
+      "typeVersion": 1,
+      "position": [1100, 320],
+      "credentials": { "kafka": { "id": "redpanda", "name": "Redpanda (internal)" } }
+    },
+    {
+      "parameters": {
+        "functionCode": "const error = $input.item.json;\nconst ctx = ($('Validate + Resolve').item || {}).json || {};\nconst retryCount = ctx.retry_count || 0;\nconst maxRetries = ctx.max_retries || 5;\nconst status = error.status || error.statusCode || (error.response && error.response.status) || 0;\nconst isTransient = status === 429 || (status >= 500 && status < 600);\nconst shouldRetry = isTransient && retryCount < maxRetries;\nreturn [{ json: {\n  workflow: 'tai-outbound',\n  operation: ctx.operation,\n  correlation_id: ctx.correlation_id,\n  error_message: error.message || 'unknown error',\n  status,\n  retry_count: retryCount,\n  max_retries: maxRetries,\n  should_retry: shouldRetry,\n  retry_delay_ms: Math.min(60000, 1000 * Math.pow(2, retryCount)) + Math.floor(Math.random() * 500),\n  requeue_payload: { ...(ctx.original || {}), _retry_count: retryCount + 1 },\n  timestamp: new Date().toISOString()\n}}];"
+      },
+      "name": "Handle Error",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [660, 560]
+    },
+    {
+      "parameters": {
+        "conditions": { "boolean": [{ "value1": "={{ $json.should_retry }}", "value2": true }] }
+      },
+      "name": "Retry or DLQ?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [880, 560]
+    },
+    {
+      "parameters": { "amount": "={{ $json.retry_delay_ms }}", "unit": "milliseconds" },
+      "name": "Backoff",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1,
+      "position": [1100, 500]
+    },
+    {
+      "parameters": {
+        "operation": "sendMessage",
+        "topic": "tai-out",
+        "sendInputData": false,
+        "message": "={{ JSON.stringify($json.requeue_payload) }}",
+        "options": { "acks": -1, "compression": "gzip" }
+      },
+      "name": "Requeue on tai-out",
+      "type": "n8n-nodes-base.kafka",
+      "typeVersion": 1,
+      "position": [1320, 500],
+      "credentials": { "kafka": { "id": "redpanda", "name": "Redpanda (internal)" } }
+    },
+    {
+      "parameters": {
+        "operation": "sendMessage",
+        "topic": "errors-dlq",
+        "sendInputData": false,
+        "message": "={{ JSON.stringify($json) }}",
+        "options": { "acks": -1, "compression": "gzip" }
+      },
+      "name": "Send to DLQ",
+      "type": "n8n-nodes-base.kafka",
+      "typeVersion": 1,
+      "position": [1100, 660],
+      "credentials": { "kafka": { "id": "redpanda", "name": "Redpanda (internal)" } }
+    }
+  ],
+  "connections": {
+    "Kafka Trigger - tai-out": { "main": [[{ "node": "Validate + Resolve", "type": "main", "index": 0 }]] },
+    "Validate + Resolve": {
+      "main":  [[{ "node": "Call Tai API",  "type": "main", "index": 0 }]],
+      "error": [[{ "node": "Handle Error", "type": "main", "index": 0 }]]
+    },
+    "Call Tai API": {
+      "main":  [[{ "node": "Format Success", "type": "main", "index": 0 }]],
+      "error": [[{ "node": "Handle Error",   "type": "main", "index": 0 }]]
+    },
+    "Format Success": { "main": [[{ "node": "Confirm to Kafka (tai-updates)", "type": "main", "index": 0 }]] },
+    "Handle Error":   { "main": [[{ "node": "Retry or DLQ?", "type": "main", "index": 0 }]] },
+    "Retry or DLQ?": {
+      "main": [
+        [{ "node": "Backoff",     "type": "main", "index": 0 }],
+        [{ "node": "Send to DLQ", "type": "main", "index": 0 }]
+      ]
+    },
+    "Backoff": { "main": [[{ "node": "Requeue on tai-out", "type": "main", "index": 0 }]] }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveDataErrorExecution": "all",
+    "saveDataSuccessExecution": "none",
+    "timezone": "America/Los_Angeles"
+  }
+}

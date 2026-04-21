@@ -143,6 +143,27 @@ services:
         https_redirect_status_code: 301
         tags: [unigroup]
 
+  # Tai TMS - inbound webhooks (bills, invoices, shipments, customers, carriers).
+  # Tai is configured to POST all webhook types to /tai?webhook_type=<type>.
+  # The n8n workflow reads the webhook_type query param to route to the correct
+  # Kafka topic. Financial + entity events are immediate; shipment events have
+  # up to a 1-minute delivery delay from Tai.
+  - name: tai-service
+    url: http://n8n:5678/webhook/tai
+    retries: 2
+    connect_timeout: 5000
+    read_timeout: 30000
+    write_timeout: 30000
+    tags: [tai]
+    routes:
+      - name: tai-route
+        paths: ["/tai"]
+        methods: [POST, OPTIONS]
+        protocols: [https]
+        strip_path: true
+        https_redirect_status_code: 301
+        tags: [tai]
+
 # -----------------------------
 # Consumers & API keys
 # -----------------------------
@@ -170,6 +191,10 @@ consumers:
     tags: [unigroup]
     keyauth_credentials:
       - key: REPLACE_ME_unigroup_api_key
+  - username: tai-client
+    tags: [tai]
+    keyauth_credentials:
+      - key: dev_tai_c665209e88c281956e4b7077013c3cdbb363b561
 
 # -----------------------------
 # Global plugins - applied to every route unless overridden

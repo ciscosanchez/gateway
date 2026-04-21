@@ -30,6 +30,14 @@ topics=(
   "wms-updates            6 3 604800000  zstd"        # 7d  - WMS responses
   "dispatch-out           6 3 2592000000 zstd"        # 30d - outbound to Dispatch
   "dispatch-updates       6 3 604800000  zstd"        # 7d  - Dispatch responses
+  # Tai TMS integration
+  "tai-bills              6 3 2592000000 zstd"        # 30d accounts-payable events
+  "tai-invoices           6 3 2592000000 zstd"        # 30d accounts-receivable events
+  "tai-shipments         12 3 604800000  zstd"        # 7d  high-volume shipment events
+  "tai-customers          3 3 2592000000 zstd"        # 30d customer entity changes
+  "tai-carriers           3 3 2592000000 zstd"        # 30d carrier entity changes
+  "tai-out                6 3 2592000000 zstd"        # 30d outbound queue → Tai API
+  "tai-updates            6 3 604800000  zstd"        # 7d  Tai API response confirmations
   # Dead-letter queue - low volume, long retention for forensic analysis
   "errors-dlq             3 3 7776000000 zstd"        # 90d
 )

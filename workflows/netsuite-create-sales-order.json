@@ -64,7 +64,7 @@
         "operation": "sendMessage",
         "topic": "netsuite-updates",
         "sendInputData": false,
-        "jsonMessage": "={{ JSON.stringify($json) }}",
+        "message": "={{ JSON.stringify($json) }}",
         "options": {
           "acks": -1,
           "compression": "gzip"
@@ -115,7 +115,7 @@
         "operation": "sendMessage",
         "topic": "orders",
         "sendInputData": false,
-        "jsonMessage": "={{ JSON.stringify($json.original_order) }}",
+        "message": "={{ JSON.stringify($json.original_order) }}",
         "options": {
           "acks": -1,
           "compression": "gzip"
@@ -134,7 +134,7 @@
         "operation": "sendMessage",
         "topic": "errors-dlq",
         "sendInputData": false,
-        "jsonMessage": "={{ JSON.stringify($json) }}",
+        "message": "={{ JSON.stringify($json) }}",
         "options": {
           "acks": -1,
           "compression": "gzip"

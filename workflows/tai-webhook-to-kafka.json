@@ -1,0 +1,236 @@
+{
+  "createdAt": "2026-04-21T21:27:20.806Z",
+  "updatedAt": "2026-04-21T21:27:34.530Z",
+  "id": "MyR8w2AwBjqAcw3d",
+  "name": "Tai Webhook to Kafka",
+  "active": true,
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "tai",
+        "responseMode": "responseNode",
+        "options": {
+          "rawBody": false
+        }
+      },
+      "name": "Tai Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [
+        240,
+        320
+      ],
+      "webhookId": "tai-webhook",
+      "id": "db1d2439-ab32-41ef-bb76-42c895edeabe"
+    },
+    {
+      "parameters": {
+        "functionCode": "// Route inbound Tai webhook payloads to the correct Kafka topic.\n// Tai is configured to POST each webhook type to /tai?webhook_type=<type>.\n// Kong has already enforced key-auth and stripped X-API-Key.\n//\n// Webhook type \u2192 topic mapping:\n//   Financial  : bill_create, commission_bill_create   \u2192 tai-bills\n//                invoice_create, invoice_create_with_shipment \u2192 tai-invoices\n//   Shipment   : shipment_*                            \u2192 tai-shipments\n//   Entity     : customer_create, customer_update      \u2192 tai-customers\n//                carrier_create,  carrier_update       \u2192 tai-carriers\nconst item = $input.item.json;\n\nconst webhookType = (item.query && item.query.webhook_type) || item.webhook_type;\nif (!webhookType) {\n  const err = new Error('missing webhook_type query param');\n  err.statusCode = 400;\n  throw err;\n}\n\nconst TOPIC_MAP = {\n  bill_create:                        'tai-bills',\n  commission_bill_create:             'tai-bills',\n  invoice_create:                     'tai-invoices',\n  invoice_create_with_shipment:       'tai-invoices',\n  shipment_create:                    'tai-shipments',\n  shipment_detail_update:             'tai-shipments',\n  shipment_status_update:             'tai-shipments',\n  shipment_location_update:           'tai-shipments',\n  shipment_location_update_extended:  'tai-shipments',\n  customer_create:                    'tai-customers',\n  customer_update:                    'tai-customers',\n  carrier_create:                     'tai-carriers',\n  carrier_update:                     'tai-carriers',\n};\n\nconst topic = TOPIC_MAP[webhookType];\nif (!topic) {\n  const err = new Error(`unsupported webhook_type: ${webhookType}`);\n  err.statusCode = 400;\n  throw err;\n}\n\n// Strip query/headers wrapper \u2014 Tai's actual payload is the POST body\nconst payload = item.body || item;\n\nconst event = {\n  source:         'tai',\n  webhook_type:   webhookType,\n  payload,\n  received_at:    new Date().toISOString(),\n  correlation_id: $('Tai Webhook').first().json.headers?.['x-request-id'] || $execution.id,\n  _key:           `tai:${webhookType}:${Date.now()}`,\n  _topic:         topic,\n};\n\nreturn [{ json: event }];"
+      },
+      "name": "Validate + Route",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [
+        460,
+        320
+      ],
+      "id": "1a150c05-366d-4654-8c57-fcfee8a64e39"
+    },
+    {
+      "parameters": {
+        "operation": "sendMessage",
+        "topic": "={{ $json._topic }}",
+        "sendInputData": false,
+        "message": "={{ JSON.stringify($json) }}",
+        "options": {
+          "acks": -1,
+          "compression": "gzip",
+          "maxInFlightRequests": 5,
+          "headers": {
+            "content-type": "application/json",
+            "schema-version": "1",
+            "source": "tai"
+          },
+          "useSchemaRegistry": false
+        }
+      },
+      "name": "Produce to Kafka",
+      "type": "n8n-nodes-base.kafka",
+      "typeVersion": 1,
+      "position": [
+        680,
+        320
+      ],
+      "credentials": {
+        "kafka": {
+          "id": "sXci6IcLGxdENHEf",
+          "name": "Redpanda (internal)"
+        }
+      },
+      "id": "fd3aa7b9-7f09-4242-9a52-ddf1d75dee89"
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { accepted: true, webhook_type: $('Validate + Route').item.json.webhook_type, topic: $('Validate + Route').item.json._topic, correlation_id: $('Validate + Route').item.json.correlation_id } }}",
+        "options": {
+          "responseCode": 202
+        }
+      },
+      "name": "Success Response",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [
+        900,
+        320
+      ],
+      "id": "a4908f20-1925-47b8-be36-81112aa7a919"
+    },
+    {
+      "parameters": {
+        "functionCode": "const err = $input.item.json;\nconst status = err.statusCode || err.status || 500;\nconst isClient = status >= 400 && status < 500;\nreturn {\n  json: {\n    workflow: 'tai-webhook-to-kafka',\n    error:    err.message || err.error || 'unknown',\n    status,\n    is_client_error: isClient,\n    original: err,\n    timestamp: new Date().toISOString()\n  }\n};"
+      },
+      "name": "Build DLQ Record",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [
+        680,
+        540
+      ],
+      "id": "e03f1987-c6dc-4412-9b48-2f403c8a3284"
+    },
+    {
+      "parameters": {
+        "operation": "sendMessage",
+        "topic": "errors-dlq",
+        "sendInputData": false,
+        "message": "={{ JSON.stringify($json) }}",
+        "options": {
+          "acks": -1,
+          "compression": "gzip"
+        }
+      },
+      "name": "Send to DLQ",
+      "type": "n8n-nodes-base.kafka",
+      "typeVersion": 1,
+      "position": [
+        900,
+        540
+      ],
+      "credentials": {
+        "kafka": {
+          "id": "sXci6IcLGxdENHEf",
+          "name": "Redpanda (internal)"
+        }
+      },
+      "id": "2322f4d6-8474-4ef9-900b-57a7f709904e"
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { accepted: false, error: $json.error, status: $json.status } }}",
+        "options": {
+          "responseCode": "={{ $json.status }}"
+        }
+      },
+      "name": "Error Response",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [
+        1120,
+        540
+      ],
+      "id": "c2c785db-f72a-44fd-bd1e-1f128b2483da"
+    }
+  ],
+  "connections": {
+    "Tai Webhook": {
+      "main": [
+        [
+          {
+            "node": "Validate + Route",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate + Route": {
+      "main": [
+        [
+          {
+            "node": "Produce to Kafka",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ],
+      "error": [
+        [
+          {
+            "node": "Build DLQ Record",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Produce to Kafka": {
+      "main": [
+        [
+          {
+            "node": "Success Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ],
+      "error": [
+        [
+          {
+            "node": "Build DLQ Record",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build DLQ Record": {
+      "main": [
+        [
+          {
+            "node": "Send to DLQ",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send to DLQ": {
+      "main": [
+        [
+          {
+            "node": "Error Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveDataErrorExecution": "all",
+    "saveDataSuccessExecution": "none",
+    "saveExecutionProgress": false,
+    "timezone": "America/Los_Angeles",
+    "errorWorkflow": ""
+  },
+  "staticData": null,
+  "meta": null,
+  "pinData": null,
+  "versionId": null,
+  "triggerCount": 1,
+  "tags": []
+}
