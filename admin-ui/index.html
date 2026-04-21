@@ -114,8 +114,8 @@
       <div class="grid grid-cols-4 gap-4 mb-8">
         <div class="bg-white border border-slate-200 rounded-lg p-4">
           <div class="text-xs text-slate-500 uppercase tracking-wide">Integrations</div>
-          <div class="text-3xl font-semibold mt-1">6</div>
-          <div class="text-xs text-slate-500 mt-1">4 live · 2 scaffolded</div>
+          <div id="stat-integration-count" class="text-3xl font-semibold mt-1">—</div>
+          <div id="stat-integration-sub"   class="text-xs text-slate-500 mt-1">loading…</div>
         </div>
         <div class="bg-white border border-slate-200 rounded-lg p-4">
           <div class="text-xs text-slate-500 uppercase tracking-wide">Credentials</div>
@@ -134,64 +134,9 @@
         </div>
       </div>
 
-      <!-- integration cards -->
+      <!-- integration cards — rendered dynamically by renderDashboard() -->
       <h2 class="text-sm font-semibold uppercase tracking-wide text-slate-500 mb-2">Integrations</h2>
-      <div class="grid grid-cols-3 gap-4">
-        <div class="bg-white border border-slate-200 rounded-lg p-4 hover:border-blue-400 cursor-pointer" onclick="goto('integrations','samsara')">
-          <div class="flex items-center justify-between">
-            <div class="font-semibold">Samsara</div>
-            <span class="status-dot status-healthy" title="healthy"></span>
-          </div>
-          <div class="text-xs text-slate-500 mt-1">Inbound webhook · HMAC</div>
-          <div class="text-xs text-slate-700 mt-3">Last event <strong>2m ago</strong></div>
-        </div>
-        <div class="bg-white border border-slate-200 rounded-lg p-4 hover:border-blue-400 cursor-pointer" onclick="goto('integrations','netsuite')">
-          <div class="flex items-center justify-between">
-            <div class="font-semibold">NetSuite</div>
-            <span class="status-dot status-degraded" title="degraded"></span>
-          </div>
-          <div class="text-xs text-slate-500 mt-1">OAuth1 TBA · bidirectional</div>
-          <div class="text-xs text-slate-700 mt-3">Creds <strong>missing</strong></div>
-        </div>
-        <div class="bg-white border border-slate-200 rounded-lg p-4 hover:border-blue-400 cursor-pointer" onclick="goto('integrations','unigroup')">
-          <div class="flex items-center justify-between">
-            <div class="font-semibold">Unigroup Converge</div>
-            <span class="status-dot status-degraded" title="degraded"></span>
-          </div>
-          <div class="text-xs text-slate-500 mt-1">OAuth2 + GraphQL · outbound</div>
-          <div class="text-xs text-slate-700 mt-3">Creds <strong>missing</strong></div>
-        </div>
-        <div class="bg-white border border-slate-200 rounded-lg p-4 hover:border-blue-400 cursor-pointer" onclick="goto('integrations','wms')">
-          <div class="flex items-center justify-between">
-            <div class="font-semibold">WMS</div>
-            <span class="status-dot status-unknown" title="not configured"></span>
-          </div>
-          <div class="text-xs text-slate-500 mt-1">REST · outbound (stub)</div>
-          <div class="text-xs text-slate-700 mt-3">Not yet wired</div>
-        </div>
-        <div class="bg-white border border-slate-200 rounded-lg p-4 hover:border-blue-400 cursor-pointer" onclick="goto('integrations','dispatch')">
-          <div class="flex items-center justify-between">
-            <div class="font-semibold">Dispatch</div>
-            <span class="status-dot status-unknown" title="not configured"></span>
-          </div>
-          <div class="text-xs text-slate-500 mt-1">—</div>
-          <div class="text-xs text-slate-700 mt-3">Not yet wired</div>
-        </div>
-        <div class="bg-white border border-slate-200 rounded-lg p-4 hover:border-blue-400 cursor-pointer" onclick="goto('integrations','tai')">
-          <div class="flex items-center justify-between">
-            <div class="font-semibold">Tai TMS</div>
-            <span class="status-dot status-healthy" title="healthy"></span>
-          </div>
-          <div class="text-xs text-slate-500 mt-1">API key · inbound + outbound</div>
-          <div class="text-xs text-slate-700 mt-3">Live · beta</div>
-        </div>
-        <div class="bg-white border border-dashed border-slate-300 rounded-lg p-4 text-center grid place-items-center text-slate-500 hover:border-blue-400 cursor-pointer" onclick="goto('integrations','new')">
-          <div>
-            <div class="text-2xl">＋</div>
-            <div class="text-sm mt-1">Add integration</div>
-          </div>
-        </div>
-      </div>
+      <div id="integration-grid" class="grid grid-cols-3 gap-4"></div>
     </section>
 
     <!-- ==================================================== -->
@@ -389,6 +334,8 @@
         n8nTypes = h.n8n_types || {};
         const enabledSources = Object.entries(sourcesState).filter(([,v]) => v.enabled).map(([k]) => k);
         const writables = Object.entries(sourcesState).filter(([,v]) => v.writable).map(([k]) => k);
+        // Fetch structure first, then credentials — renderDashboard needs both.
+        await refreshIntegrations();
         await refreshCreds();
         await refreshAudit();
         await refreshPending();
@@ -399,9 +346,11 @@
         document.getElementById('status-banner-text').innerHTML =
           `<strong>Live.</strong> Backend phase ${h.phase || '?'} — ${enabledSources.length} source(s): ${enabledSources.join(', ')}. ` +
           `Writes: ${writables.join(', ') || '<em>read-only</em>'}.${restartNote}`;
+        renderDashboard();
         onHash();
       } catch (e) {
         console.info('admin backend unreachable, using mock:', e);
+        renderDashboard();   // render with mock data so the page isn't empty
       }
     }
 
@@ -564,6 +513,7 @@
         await refreshAudit();
         await refreshPending();
         renderCreds('all');
+        renderDashboard();
       } catch (e) {
         err.textContent = String(e.message || e);
         err.classList.remove('hidden');
@@ -605,6 +555,7 @@
         await refreshAudit();
         await refreshPending();
         renderCreds('all');
+        renderDashboard();
       } catch (e) {
         toastErr('Rotate failed', String(e.message || e));
       }
@@ -635,49 +586,82 @@
         await refreshAudit();
         await refreshPending();
         renderCreds('all');
+        renderDashboard();
       } catch (e) {
         toastErr('Delete failed', String(e.message || e));
       }
     }
-    const integrationDetails = {
-      samsara: {
-        title:'Samsara', status:'healthy',
-        summary:'Inbound webhook flow. HMAC-SHA256 signature verified at Kong before n8n sees the payload.',
-        events: [
-          '15:02  GeofenceEntry  vehicle_281…656  Warehouse A',
-          '15:00  Trip           vehicle_281…657  —',
-          '14:58  GeofenceExit   vehicle_281…656  Warehouse A'
-        ]
-      },
-      netsuite: {
-        title:'NetSuite', status:'degraded',
-        summary:'Outbound workflow complete (netsuite-create-sales-order.json). Blocked on OAuth1 TBA credentials.',
-        events: [
-          'Waiting on NETSUITE_CONSUMER_KEY / _SECRET / TOKEN_ID / TOKEN_SECRET in .env',
-          'Inbound webhook path /netsuite is wired (netsuite-webhook-to-kafka.json)'
-        ]
-      },
-      unigroup: {
-        title:'Unigroup Converge', status:'degraded',
-        summary:'OAuth2 client_credentials + GraphQL. Outbound workflow scaffolded. Blocked on Keycloak client credentials from Unigroup.',
-        events: [
-          'Waiting on UNIGROUP_CLIENT_ID / UNIGROUP_CLIENT_SECRET in .env',
-          'Also need: scope value + confirmation whether Converge pushes webhooks or we poll'
-        ]
-      },
-      tai: {
-        title:'Tai TMS', status:'healthy',
-        summary:'Inbound webhooks accepted at /tai (API key auth). Events routed to tai-bills, tai-invoices, tai-shipments, tai-customers, tai-carriers topics. Outbound workers consume tai-out and tai-updates to push back to the Tai REST API. Live in beta — key rotates 1st of each month.',
-        events: [
-          'Inbound: /tai → tai-webhook-to-kafka.json → Redpanda',
-          'Outbound: tai-out + tai-updates → tai-outbound-processor.json → Tai API',
-          'Topics: tai-bills · tai-invoices · tai-shipments · tai-customers · tai-carriers · tai-out · tai-updates',
-          'Contact: Kyle Wang (Tai integration owner) for credential rotation'
-        ]
-      },
-      wms:      { title:'WMS',      status:'unknown', summary:'Route exists in kong.yml. No workflow wired yet.', events:[] },
-      dispatch: { title:'Dispatch', status:'unknown', summary:'Not scaffolded yet.', events:[] }
-    };
+    // ── integration registry (populated from /api/integrations; mock fallback below) ──
+    const MOCK_INTEGRATIONS = [
+      { key:'samsara',  name:'Samsara',    description:'Inbound webhook · HMAC-SHA256', notes:'Inbound webhook flow. Kong verifies HMAC-SHA256 signature before n8n sees the payload. Events published to samsara-events topic. PII stripped before publish.' },
+      { key:'netsuite', name:'NetSuite',   description:'OAuth1 TBA · bidirectional',    notes:'Outbound workflow (netsuite-create-sales-order.json) complete. Blocked on OAuth1 TBA credentials: NETSUITE_CONSUMER_KEY / _SECRET / TOKEN_ID / TOKEN_SECRET.' },
+      { key:'unigroup', name:'Unigroup',   description:'OAuth2 + GraphQL · outbound',  notes:'OAuth2 client_credentials + GraphQL. Outbound workflow scaffolded. Blocked on Keycloak client credentials from Unigroup. Also need: scope value + webhook vs poll confirmation.' },
+      { key:'tai',      name:'Tai TMS',    description:'API key · inbound + outbound',  notes:'Inbound webhooks accepted at /tai (API key auth). Events routed to tai-bills, tai-invoices, tai-shipments, tai-customers, tai-carriers topics. Outbound: tai-out + tai-updates. Live in beta — key rotates 1st of each month. Contact: Kyle Wang.' },
+      { key:'wms',      name:'WMS',        description:'REST · outbound (stub)',        notes:'Route exists in kong.yml. No workflow wired yet.' },
+      { key:'dispatch', name:'Dispatch',   description:'REST · outbound (stub)',        notes:'Not scaffolded yet.' },
+    ];
+    let integrations = MOCK_INTEGRATIONS.slice();
+
+    // ── integration helpers ──────────────────────────────────────────────
+    const STATUS_CLASS = { healthy:'status-healthy', degraded:'status-degraded', down:'status-down', unknown:'status-unknown' };
+
+    function integrationStatus(intgName) {
+      const related = creds.filter(c => c.integration === intgName);
+      if (!related.length) return 'unknown';
+      if (related.every(c => c.status === 'missing')) return 'unknown';
+      if (related.some(c => c.status === 'missing')) return 'degraded';
+      return 'healthy';
+    }
+
+    function cardSubtext(intgName, status) {
+      if (status === 'healthy') return 'All credentials set';
+      if (status === 'degraded') {
+        const n = creds.filter(c => c.integration === intgName && c.status === 'missing').length;
+        return `${n} cred${n === 1 ? '' : 's'} missing`;
+      }
+      return 'Not yet wired';
+    }
+
+    async function refreshIntegrations() {
+      try {
+        const r = await fetch('/api/integrations');
+        if (r.ok) integrations = (await r.json()).integrations || integrations;
+      } catch (_) { /* keep mock */ }
+    }
+
+    function renderDashboard() {
+      // stats
+      const total       = integrations.length;
+      const liveCount   = integrations.filter(i => integrationStatus(i.name) === 'healthy').length;
+      const scaffolded  = total - liveCount;
+      document.getElementById('stat-integration-count').textContent = total;
+      document.getElementById('stat-integration-sub').textContent   = `${liveCount} live · ${scaffolded} scaffolded`;
+
+      // cards
+      const grid = document.getElementById('integration-grid');
+      grid.innerHTML = integrations.map(i => {
+        const st  = integrationStatus(i.name);
+        const cls = STATUS_CLASS[st] || 'status-unknown';
+        const sub = cardSubtext(i.name, st);
+        return `
+          <div class="bg-white border border-slate-200 rounded-lg p-4 hover:border-blue-400 cursor-pointer"
+               onclick="goto('integrations','${i.key}')">
+            <div class="flex items-center justify-between">
+              <div class="font-semibold">${i.name}</div>
+              <span class="status-dot ${cls}" title="${st}"></span>
+            </div>
+            <div class="text-xs text-slate-500 mt-1">${i.description || '—'}</div>
+            <div class="text-xs text-slate-700 mt-3">${sub}</div>
+          </div>`;
+      }).join('') + `
+        <div class="bg-white border border-dashed border-slate-300 rounded-lg p-4 text-center grid place-items-center text-slate-500 hover:border-blue-400 cursor-pointer"
+             onclick="goto('integrations','new')">
+          <div>
+            <div class="text-2xl">＋</div>
+            <div class="text-sm mt-1">Add integration</div>
+          </div>
+        </div>`;
+    }
 
     // --- toasts -------------------------------------------------------
     function showToast({ title, body = '', type = 'info', sticky = false, timeoutMs = 5000 }) {
@@ -756,7 +740,7 @@
       const el = document.getElementById('view-' + viewId);
       if (el) el.classList.add('active');
       if (viewId === 'credentials') renderCreds('all');
-      if (viewId === 'integrations') renderIntegration(detailKey || 'samsara');
+      if (viewId === 'integrations') renderIntegration(detailKey || integrations[0]?.key || 'samsara');
       if (viewId === 'audit') renderAudit();
     }
 
@@ -839,45 +823,52 @@
 
     // --- integrations view --------------------------------------------
     function renderIntegration(key) {
-      const d = integrationDetails[key] || integrationDetails.samsara;
-      const related = creds.filter(c => c.integration === d.title);
-      const statusClass = { healthy:'status-healthy', degraded:'status-degraded', down:'status-down', unknown:'status-unknown' }[d.status];
-      const events = d.events.length
-        ? `<ul class="space-y-1 font-mono text-xs text-slate-700">${d.events.map(e => `<li>${e}</li>`).join('')}</ul>`
-        : '<div class="text-xs text-slate-400 italic">No recent activity.</div>';
-      const relatedRows = related.map(c => `
-        <div class="flex items-center justify-between py-1.5 text-sm">
-          <span class="font-mono text-xs">${c.name}</span>
-          <span class="text-xs text-slate-500">${c.source}</span>
-        </div>`).join('') || '<div class="text-xs text-slate-400 italic">No credentials linked.</div>';
+      const intg = integrations.find(i => i.key === key) || integrations[0];
+      if (!intg) return;
+      const status      = integrationStatus(intg.name);
+      const statusClass = STATUS_CLASS[status] || 'status-unknown';
+      const related     = creds.filter(c => c.integration === intg.name);
+      const relatedRows = related.map(c => {
+        const stBadge = c.status === 'ok'
+          ? '<span class="text-xs text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded ml-auto">ok</span>'
+          : '<span class="text-xs text-amber-700  bg-amber-50  px-2 py-0.5 rounded ml-auto">missing</span>';
+        return `
+          <div class="flex items-center gap-2 py-1.5 text-sm">
+            <span class="font-mono text-xs">${c.name}</span>
+            <span class="text-xs text-slate-400">${c.source}</span>
+            ${stBadge}
+          </div>`;
+      }).join('') || '<div class="text-xs text-slate-400 italic">No credentials linked.</div>';
+
       document.getElementById('integration-detail').innerHTML = `
         <aside class="col-span-1">
           <div class="text-xs text-slate-500 uppercase tracking-wide mb-2">Integrations</div>
           <nav class="bg-white border border-slate-200 rounded-lg overflow-hidden">
-            ${Object.entries(integrationDetails).map(([k,v]) => `
-              <a href="#integrations/${k}" class="block px-3 py-2 text-sm border-b border-slate-100 last:border-b-0 ${k===key ? 'bg-blue-50 text-blue-800 font-semibold' : 'hover:bg-slate-50'}">
-                <span class="status-dot ${{'healthy':'status-healthy','degraded':'status-degraded','down':'status-down','unknown':'status-unknown'}[v.status]}"></span>
-                ${v.title}
-              </a>
-            `).join('')}
+            ${integrations.map(i => {
+              const st  = integrationStatus(i.name);
+              const cls = STATUS_CLASS[st] || 'status-unknown';
+              const active = i.key === intg.key;
+              return `
+                <a href="#integrations/${i.key}"
+                   class="block px-3 py-2 text-sm border-b border-slate-100 last:border-b-0 ${active ? 'bg-blue-50 text-blue-800 font-semibold' : 'hover:bg-slate-50'}">
+                  <span class="status-dot ${cls}"></span> ${i.name}
+                </a>`;
+            }).join('')}
           </nav>
         </aside>
         <section class="col-span-2 space-y-4">
           <div class="bg-white border border-slate-200 rounded-lg p-5">
             <div class="flex items-center gap-2 mb-2">
               <span class="status-dot ${statusClass}"></span>
-              <h2 class="text-lg font-semibold">${d.title}</h2>
-              <span class="ml-auto text-xs text-slate-500 uppercase">${d.status}</span>
+              <h2 class="text-lg font-semibold">${intg.name}</h2>
+              <span class="ml-auto text-xs text-slate-500 uppercase">${status}</span>
             </div>
-            <p class="text-sm text-slate-600">${d.summary}</p>
+            <p class="text-xs text-slate-500 mb-2">${intg.description || ''}</p>
+            <p class="text-sm text-slate-600">${intg.notes || 'No description available.'}</p>
           </div>
           <div class="bg-white border border-slate-200 rounded-lg p-5">
             <h3 class="text-sm font-semibold uppercase tracking-wide text-slate-500 mb-2">Credentials</h3>
             <div class="divide-y divide-slate-100">${relatedRows}</div>
-          </div>
-          <div class="bg-white border border-slate-200 rounded-lg p-5">
-            <h3 class="text-sm font-semibold uppercase tracking-wide text-slate-500 mb-2">Recent activity</h3>
-            ${events}
           </div>
         </section>
       `;

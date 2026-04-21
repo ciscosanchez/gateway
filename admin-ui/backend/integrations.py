@@ -49,6 +49,10 @@ class Integration:
     kong_consumer: Optional[str]        = None   # e.g. "tai-client"
     n8n_types: list[str]                = field(default_factory=list)
     probe: Optional[Callable[[], Tuple[bool, str]]] = None
+    key: str                            = ""     # URL slug; auto-derived from name if empty
+    description: str                    = ""     # one-line card subtitle shown in dashboard grid
+    notes: str                          = ""     # longer summary shown in integration detail panel
+    hidden: bool                        = False  # exclude from UI (infra/platform integrations)
 
 
 # ── registry ─────────────────────────────────────────────────────────────────
@@ -59,6 +63,14 @@ INTEGRATIONS: list[Integration] = [
 
     Integration(
         name="Samsara",
+        key="samsara",
+        description="Inbound webhook · HMAC-SHA256",
+        notes=(
+            "Inbound webhook flow. Kong verifies HMAC-SHA256 signature before n8n "
+            "sees the payload. Events are normalised in n8n and published to the "
+            "samsara-events Redpanda topic. PII (driver names, addresses) is "
+            "stripped before publish."
+        ),
         env_vars=[
             EnvVar("SAMSARA_API_TOKEN",      "secret", N8N),
             EnvVar("SAMSARA_WEBHOOK_SECRET", "secret", N8N + KONG),
@@ -68,6 +80,14 @@ INTEGRATIONS: list[Integration] = [
 
     Integration(
         name="NetSuite",
+        key="netsuite",
+        description="OAuth1 TBA · bidirectional",
+        notes=(
+            "Outbound workflow (netsuite-create-sales-order.json) is complete. "
+            "Blocked on OAuth1 TBA credentials: NETSUITE_CONSUMER_KEY / _SECRET / "
+            "TOKEN_ID / TOKEN_SECRET. Inbound webhook path /netsuite is wired via "
+            "netsuite-webhook-to-kafka.json."
+        ),
         env_vars=[
             EnvVar("NETSUITE_ACCOUNT_ID",      "identifier", N8N),
             EnvVar("NETSUITE_CONSUMER_KEY",    "secret",     N8N),
@@ -81,6 +101,14 @@ INTEGRATIONS: list[Integration] = [
 
     Integration(
         name="Unigroup",
+        key="unigroup",
+        description="OAuth2 + GraphQL · outbound",
+        notes=(
+            "OAuth2 client_credentials + GraphQL. Outbound workflow scaffolded. "
+            "Blocked on Keycloak client credentials from Unigroup: "
+            "UNIGROUP_CLIENT_ID / UNIGROUP_CLIENT_SECRET. Also need: scope value "
+            "and confirmation whether Converge pushes webhooks or we poll."
+        ),
         env_vars=[
             EnvVar("UNIGROUP_ENV",           "config", N8N),
             EnvVar("UNIGROUP_CLIENT_ID",     "secret", N8N),
@@ -91,7 +119,29 @@ INTEGRATIONS: list[Integration] = [
     ),
 
     Integration(
+        name="Tai TMS",
+        key="tai",
+        description="API key · inbound + outbound",
+        notes=(
+            "Inbound webhooks accepted at /tai (API key auth via Kong). Events "
+            "routed to tai-bills, tai-invoices, tai-shipments, tai-customers, "
+            "tai-carriers topics. Outbound workers consume tai-out and tai-updates "
+            "to push back to the Tai REST API. Live in beta — key rotates 1st of "
+            "each month. Contact: Kyle Wang."
+        ),
+        env_vars=[
+            EnvVar("TAI_API_URL",         "config", N8N),
+            EnvVar("TAI_API_KEY",         "secret", N8N),
+            EnvVar("TAI_INBOUND_API_KEY", "secret", KONG),
+        ],
+        kong_consumer="tai-client",
+    ),
+
+    Integration(
         name="WMS",
+        key="wms",
+        description="REST · outbound (stub)",
+        notes="Route exists in kong.yml. No workflow wired yet.",
         env_vars=[
             EnvVar("WMS_API_KEY", "secret", N8N),
             EnvVar("WMS_API_URL", "config", N8N),
@@ -101,6 +151,9 @@ INTEGRATIONS: list[Integration] = [
 
     Integration(
         name="Dispatch",
+        key="dispatch",
+        description="REST · outbound (stub)",
+        notes="Not scaffolded yet.",
         env_vars=[
             EnvVar("DISPATCH_API_KEY", "secret", N8N),
             EnvVar("DISPATCH_API_URL", "config", N8N),
@@ -108,19 +161,10 @@ INTEGRATIONS: list[Integration] = [
         kong_consumer="dispatch-client",
     ),
 
-    Integration(
-        name="Tai",
-        env_vars=[
-            EnvVar("TAI_API_URL",         "config", N8N),
-            EnvVar("TAI_API_KEY",         "secret", N8N),
-            EnvVar("TAI_INBOUND_API_KEY", "secret", KONG),
-        ],
-        kong_consumer="tai-client",
-    ),
-
     # ── Infrastructure / platform (not external integrations) ────────────────
     Integration(
         name="Infra",
+        hidden=True,
         env_vars=[
             EnvVar("POSTGRES_PASSWORD",       "secret", INFRA),
             EnvVar("REDIS_PASSWORD",          "secret", REDIS),
@@ -135,6 +179,7 @@ INTEGRATIONS: list[Integration] = [
 
     Integration(
         name="Alerting",
+        hidden=True,
         env_vars=[
             EnvVar("ALERTMANAGER_SLACK_WEBHOOK", "secret", ["alertmanager"]),
             EnvVar("ALERTMANAGER_PAGERDUTY_KEY", "secret", ["alertmanager"]),
@@ -144,6 +189,7 @@ INTEGRATIONS: list[Integration] = [
 
     Integration(
         name="Zammad",
+        hidden=True,
         env_vars=[
             EnvVar("ZAMMAD_URL",       "config", N8N),
             EnvVar("ZAMMAD_API_TOKEN", "secret", N8N),
@@ -154,6 +200,7 @@ INTEGRATIONS: list[Integration] = [
 
     Integration(
         name="Backup",
+        hidden=True,
         env_vars=[
             EnvVar("BACKUP_AGE_RECIPIENT", "config", []),
         ],

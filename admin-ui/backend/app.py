@@ -504,8 +504,23 @@ def clear_kong_credential(
 # ---------------------------------------------------------------------------
 
 @app.get("/api/integrations", tags=["integrations"])
-def list_integration_probes(actor: str = Depends(_current_actor)) -> dict:
-    return {"probes": sorted(healthchecks.PROBES.keys())}
+def list_integrations(actor: str = Depends(_current_actor)) -> dict:
+    import integrations as reg
+    return {
+        "integrations": [
+            {
+                "key":           i.key or i.name.lower().replace(" ", "-"),
+                "name":          i.name,
+                "description":   i.description,
+                "notes":         i.notes,
+                "env_vars":      [ev.name for ev in i.env_vars],
+                "kong_consumer": i.kong_consumer,
+                "has_probe":     i.name in healthchecks.PROBES,
+            }
+            for i in reg.INTEGRATIONS
+            if not i.hidden
+        ]
+    }
 
 
 @app.post("/api/integrations/{name}/test", tags=["integrations"])
