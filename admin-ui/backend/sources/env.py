@@ -23,59 +23,13 @@ from typing import Iterable
 
 from dotenv import dotenv_values
 
+from integrations import ENV_REGISTRY
+
 ENV_FILE = Path(os.getenv("ADMIN_ENV_FILE", "/app/env/.env"))
 
-# services is the compose-service list that consumes the variable; writing
-# it marks those services as needing a restart. Keep this conservative: it's
-# cheaper to restart one extra service than to miss one.
-N8N = ["n8n", "n8n-worker"]
-
-REGISTRY: dict[str, dict] = {
-    # --- Samsara ---
-    "SAMSARA_API_TOKEN":          {"integration": "Samsara",  "kind": "secret", "services": N8N},
-    "SAMSARA_WEBHOOK_SECRET":     {"integration": "Samsara",  "kind": "secret", "services": N8N + ["kong"]},
-
-    # --- NetSuite ---
-    "NETSUITE_ACCOUNT_ID":        {"integration": "NetSuite", "kind": "identifier", "services": N8N},
-    "NETSUITE_CONSUMER_KEY":      {"integration": "NetSuite", "kind": "secret",     "services": N8N},
-    "NETSUITE_CONSUMER_SECRET":   {"integration": "NetSuite", "kind": "secret",     "services": N8N},
-    "NETSUITE_TOKEN_ID":          {"integration": "NetSuite", "kind": "secret",     "services": N8N},
-    "NETSUITE_TOKEN_SECRET":      {"integration": "NetSuite", "kind": "secret",     "services": N8N},
-
-    # --- Unigroup Converge ---
-    "UNIGROUP_ENV":               {"integration": "Unigroup", "kind": "config", "services": N8N},
-    "UNIGROUP_CLIENT_ID":         {"integration": "Unigroup", "kind": "secret", "services": N8N},
-    "UNIGROUP_CLIENT_SECRET":     {"integration": "Unigroup", "kind": "secret", "services": N8N},
-    "UNIGROUP_OAUTH_SCOPE":       {"integration": "Unigroup", "kind": "config", "services": N8N},
-
-    # --- WMS ---
-    "WMS_API_KEY":                {"integration": "WMS",      "kind": "secret", "services": N8N},
-    "WMS_API_URL":                {"integration": "WMS",      "kind": "config", "services": N8N},
-
-    # --- Dispatch ---
-    "DISPATCH_API_KEY":           {"integration": "Dispatch", "kind": "secret", "services": N8N},
-    "DISPATCH_API_URL":           {"integration": "Dispatch", "kind": "config", "services": N8N},
-
-    # --- Infrastructure ---
-    "POSTGRES_PASSWORD":          {"integration": "Infra", "kind": "secret", "services": ["postgres"] + N8N + ["postgres-exporter"]},
-    "REDIS_PASSWORD":             {"integration": "Infra", "kind": "secret", "services": ["redis", "kong"] + N8N + ["redis-exporter"]},
-    "N8N_BASIC_AUTH_PASSWORD":    {"integration": "Infra", "kind": "secret", "services": N8N},
-    "N8N_ENCRYPTION_KEY":         {"integration": "Infra", "kind": "secret", "services": N8N},
-    "GF_SECURITY_ADMIN_PASSWORD": {"integration": "Infra", "kind": "secret", "services": ["grafana"]},
-
-    # --- Alerting / backup ---
-    "ALERTMANAGER_SLACK_WEBHOOK": {"integration": "Alerting", "kind": "secret", "services": ["alertmanager"]},
-    "ALERTMANAGER_PAGERDUTY_KEY": {"integration": "Alerting", "kind": "secret", "services": ["alertmanager"]},
-    "ZAMMAD_URL":                 {"integration": "Zammad",   "kind": "config", "services": N8N},
-    "ZAMMAD_API_TOKEN":           {"integration": "Zammad",   "kind": "secret", "services": N8N},
-    "ZAMMAD_GROUP":               {"integration": "Zammad",   "kind": "config", "services": N8N},
-    "ZAMMAD_CUSTOMER":            {"integration": "Zammad",   "kind": "config", "services": N8N},
-    "BACKUP_AGE_RECIPIENT":       {"integration": "Backup",   "kind": "config", "services": []},
-
-    # --- Admin UI gate ---
-    "ADMIN_UI_USER":              {"integration": "Infra", "kind": "identifier", "services": []},
-    "ADMIN_UI_PASSWORD":          {"integration": "Infra", "kind": "secret",     "services": []},
-}
+# REGISTRY is derived from the central integrations.py registry.
+# To add a new env var, add it there — not here.
+REGISTRY: dict[str, dict] = ENV_REGISTRY
 
 
 def services_for(name: str) -> list[str]:

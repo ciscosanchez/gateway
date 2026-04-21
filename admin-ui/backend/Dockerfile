@@ -9,6 +9,9 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY app.py .
 COPY audit.py .
+COPY healthchecks.py .
+COPY integrations.py .
+COPY services.py .
 COPY sources/ ./sources/
 
 RUN mkdir -p /app/data

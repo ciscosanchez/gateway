@@ -38,13 +38,9 @@ _yaml.width = 10000   # never line-wrap lua snippets in plugins[*].config.access
 
 # Map well-known consumer usernames to the integration we display. Unknown
 # consumers show up with integration "—" which is fine.
-USERNAME_TO_INTEGRATION = {
-    "samsara-client":   "Samsara",
-    "netsuite-client":  "NetSuite",
-    "unigroup-client":  "Unigroup",
-    "wms-client":       "WMS",
-    "dispatch-client":  "Dispatch",
-}
+# Derived from integrations.py — add new consumers there, not here.
+from integrations import KONG_CONSUMER_MAP
+USERNAME_TO_INTEGRATION: dict[str, str] = KONG_CONSUMER_MAP
 
 
 def _client() -> httpx.Client:

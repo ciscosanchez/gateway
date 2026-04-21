@@ -27,16 +27,9 @@ N8N_API_KEY = os.getenv("N8N_API_KEY", "")  # optional, preferred if set
 
 # Mapping from n8n credential type identifiers to the integration we track.
 # Unknown types just land with integration=None.
-TYPE_TO_INTEGRATION = {
-    "oAuth1Api":                "NetSuite",
-    "httpBasicAuth":            "Infra",
-    "httpHeaderAuth":           "Infra",
-    "kafka":                    "Infra",
-    "redisKey":                 "Infra",
-    "postgres":                 "Infra",
-    "slackApi":                 "Alerting",
-    "pagerDutyApi":             "Alerting",
-}
+# Derived from integrations.py — add new n8n_types there, not here.
+from integrations import N8N_TYPE_MAP
+TYPE_TO_INTEGRATION: dict[str, str] = N8N_TYPE_MAP
 
 
 def _client() -> httpx.Client:
