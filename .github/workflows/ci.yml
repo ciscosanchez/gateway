@@ -113,24 +113,20 @@ jobs:
           ignore-unfixed: true
 
       - name: Trivy image scans - CRITICAL fixable only, blocking
-        # Accepted CVEs live in .trivyignore; the file explains why each was
-        # accepted and the quarterly review cadence. New CRITICAL findings
-        # not in the ignore list fail the pipeline.
+        # Image list is derived live from docker-compose.yml so there is only
+        # one place to update versions. Locally-built images (name starts with
+        # "gateway") are excluded — they have no upstream CVE surface.
+        # Accepted CVEs live in .trivyignore; the file explains the rationale
+        # and quarterly review cadence. New CRITICAL findings not in the ignore
+        # list fail the pipeline.
         run: |
           set -eu
           failed=""
-          for image in \
-            kong/kong-gateway:3.6 \
-            redpandadata/redpanda:v24.1.7 \
-            n8nio/n8n:1.28.0 \
-            postgres:15-alpine \
-            redis:7-alpine \
-            prom/prometheus:v2.51.0 \
-            prom/alertmanager:v0.27.0 \
-            grafana/grafana:10.4.1 \
-            grafana/loki:2.9.6 \
-            grafana/promtail:2.9.6
-          do
+          images=$(grep -E '^\s+image: [a-zA-Z]' docker-compose.yml \
+            | awk '{print $2}' \
+            | grep -v '^gateway' \
+            | sort -u)
+          for image in $images; do
             echo "=== $image ==="
             if ! docker run --rm \
                  -v /var/run/docker.sock:/var/run/docker.sock \

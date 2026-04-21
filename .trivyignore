@@ -11,7 +11,7 @@
 #      deployment (e.g. SSH code paths in Loki we never reach).
 #   3. Delete anything that's been fixed; CI will tell you if a new one
 #      appears that isn't listed.
-# LAST REVIEWED: 2026-04-21 (n8n bumped 1.28.0 → 2.18.0; cleared 33 fixed CVEs)
+# LAST REVIEWED: 2026-04-21 (n8n bumped 1.28.0 → 2.18.0; Redpanda + Grafana new CVEs added)
 # --------------------------------------------------------------------------
 
 # --- Dockerfile misconfigurations ---
@@ -65,6 +65,21 @@ CVE-2024-37371        # krb5 GSS message token
 CVE-2023-24538        # older Go text/template (promtail)
 CVE-2023-24540        # older Go text/template (promtail)
 CVE-2023-36665        # (promtail)
+
+# --- OpenSSL (Redpanda + other Alpine/Debian base images) ---
+# CVE-2025-15467: OpenSSL RCE fixed in 3.0.18 / 3.3.6. The upstream images
+# (Redpanda v24.1.7, and any Debian-based images still on older OpenSSL) have
+# not been rebuilt against the patched release yet. Risk-mitigated: TLS
+# terminates at Kong which uses its own OpenSSL build; Redpanda listens only
+# on internal Docker networks and is not reachable from the public internet.
+CVE-2025-15467         # openssl RCE; fixed in 3.0.18+/3.3.6+; upstream rebuild pending
+
+# --- Grafana plugin SDK ---
+# CVE-2024-8986: Information leakage in grafana-plugin-sdk-go; fixed in
+# sdk 0.250.0 / Grafana 11.x+. We pin Grafana 10.4.1 for dashboard
+# compatibility; the vulnerability is in plugin RPC paths not exercised by
+# our provisioned dashboards. Grafana is loopback-only (127.0.0.1:3002).
+CVE-2024-8986          # grafana-plugin-sdk-go info leak; fixed in sdk 0.250.0 / Grafana 11+
 
 # --- Node.js / npm (n8n image) ---
 # n8nio/n8n:2.18.0 — one remaining CRITICAL in protobufjs (transitive dep
