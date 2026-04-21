@@ -299,7 +299,7 @@ services:
   # n8n - queue mode: main (API + webhooks) + N workers
   # --------------------------------------------------------------------------
   n8n:
-    image: n8nio/n8n:1.28.0
+    image: n8nio/n8n:2.18.0
     container_name: gateway-n8n
     <<: *default-restart
     environment:
@@ -391,7 +391,7 @@ services:
     logging: *default-logging
 
   n8n-worker:
-    image: n8nio/n8n:1.28.0
+    image: n8nio/n8n:2.18.0
     # No container_name so we can scale with --scale n8n-worker=N
     profiles: ["ha"]
     <<: *default-restart

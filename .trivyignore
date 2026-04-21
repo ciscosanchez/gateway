@@ -11,7 +11,7 @@
 #      deployment (e.g. SSH code paths in Loki we never reach).
 #   3. Delete anything that's been fixed; CI will tell you if a new one
 #      appears that isn't listed.
-# LAST REVIEWED: 2026-04-19 (initial list from CI run 24614331823)
+# LAST REVIEWED: 2026-04-21 (n8n bumped 1.28.0 → 2.18.0; cleared 33 fixed CVEs)
 # --------------------------------------------------------------------------
 
 # --- Dockerfile misconfigurations ---
@@ -67,34 +67,8 @@ CVE-2023-24540        # older Go text/template (promtail)
 CVE-2023-36665        # (promtail)
 
 # --- Node.js / npm (n8n image) ---
-# n8nio/n8n:1.28.0 ships a pinned Node runtime. Listed CVEs land via Node
-# stdlib or bundled npm packages. Risk-mitigated because n8n is
-# loopback-only behind Kong auth and does not parse untrusted user code
-# outside the workflow editor (which is admin-authenticated).
-CVE-2024-21508
-CVE-2024-21511
-CVE-2024-8986
-CVE-2025-7783
-CVE-2025-9288
-CVE-2025-15467
-CVE-2025-29774
-CVE-2025-29775
-CVE-2025-47949
-CVE-2025-62718
-CVE-2025-65964
-CVE-2025-68613
-CVE-2025-68668
-CVE-2026-1470
-CVE-2026-21877
-CVE-2026-21893
-CVE-2026-25049
-CVE-2026-25052
-CVE-2026-25053
-CVE-2026-25056
-CVE-2026-25115
-CVE-2026-25896
-CVE-2026-27493
-CVE-2026-27495
-CVE-2026-27577
-CVE-2026-33937
-CVE-2026-40175
+# n8nio/n8n:2.18.0 — one remaining CRITICAL in protobufjs (transitive dep
+# bundled by n8n; no upgrade path until n8n bumps protobufjs to >=7.5.5/8.0.1).
+# Risk-mitigated: n8n is loopback-only behind Kong auth; protobufjs is used
+# for gRPC serialization, not exposed via any public code path in our workflows.
+CVE-2026-41242         # protobufjs arbitrary code execution; fixed in 7.5.5 / 8.0.1
