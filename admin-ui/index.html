@@ -593,12 +593,12 @@
     }
     // ── integration registry (populated from /api/integrations; mock fallback below) ──
     const MOCK_INTEGRATIONS = [
-      { key:'samsara',  name:'Samsara',    description:'Inbound webhook · HMAC-SHA256', notes:'Inbound webhook flow. Kong verifies HMAC-SHA256 signature before n8n sees the payload. Events published to samsara-events topic. PII stripped before publish.' },
-      { key:'netsuite', name:'NetSuite',   description:'OAuth1 TBA · bidirectional',    notes:'Outbound workflow (netsuite-create-sales-order.json) complete. Blocked on OAuth1 TBA credentials: NETSUITE_CONSUMER_KEY / _SECRET / TOKEN_ID / TOKEN_SECRET.' },
-      { key:'unigroup', name:'Unigroup',   description:'OAuth2 + GraphQL · outbound',  notes:'OAuth2 client_credentials + GraphQL. Outbound workflow scaffolded. Blocked on Keycloak client credentials from Unigroup. Also need: scope value + webhook vs poll confirmation.' },
-      { key:'tai',      name:'Tai TMS',    description:'API key · inbound + outbound',  notes:'Inbound webhooks accepted at /tai (API key auth). Events routed to tai-bills, tai-invoices, tai-shipments, tai-customers, tai-carriers topics. Outbound: tai-out + tai-updates. Live in beta — key rotates 1st of each month. Contact: Kyle Wang.' },
-      { key:'wms',      name:'WMS',        description:'REST · outbound (stub)',        notes:'Route exists in kong.yml. No workflow wired yet.' },
-      { key:'dispatch', name:'Dispatch',   description:'REST · outbound (stub)',        notes:'Not scaffolded yet.' },
+      { key:'samsara',  name:'Samsara',  label:'Samsara',          description:'Inbound webhook · HMAC-SHA256', notes:'Inbound webhook flow. Kong verifies HMAC-SHA256 signature before n8n sees the payload. Events published to samsara-events topic. PII stripped before publish.' },
+      { key:'netsuite', name:'NetSuite', label:'NetSuite',          description:'OAuth1 TBA · bidirectional',    notes:'Outbound workflow (netsuite-create-sales-order.json) complete. Blocked on OAuth1 TBA credentials: NETSUITE_CONSUMER_KEY / _SECRET / TOKEN_ID / TOKEN_SECRET.' },
+      { key:'unigroup', name:'Unigroup', label:'Unigroup Converge', description:'OAuth2 + GraphQL · outbound',  notes:'OAuth2 client_credentials + GraphQL. Outbound workflow scaffolded. Blocked on Keycloak client credentials from Unigroup. Also need: scope value + webhook vs poll confirmation.' },
+      { key:'tai',      name:'Tai',      label:'Tai TMS',           description:'API key · inbound + outbound',  notes:'Inbound webhooks accepted at /tai (API key auth). Events routed to tai-bills, tai-invoices, tai-shipments, tai-customers, tai-carriers topics. Outbound: tai-out + tai-updates. Live in beta — key rotates 1st of each month. Contact: Kyle Wang.' },
+      { key:'wms',      name:'WMS',      label:'WMS',               description:'REST · outbound (stub)',        notes:'Route exists in kong.yml. No workflow wired yet.' },
+      { key:'dispatch', name:'Dispatch', label:'Dispatch',          description:'REST · outbound (stub)',        notes:'Not scaffolded yet.' },
     ];
     let integrations = MOCK_INTEGRATIONS.slice();
 
@@ -647,7 +647,7 @@
           <div class="bg-white border border-slate-200 rounded-lg p-4 hover:border-blue-400 cursor-pointer"
                onclick="goto('integrations','${i.key}')">
             <div class="flex items-center justify-between">
-              <div class="font-semibold">${i.name}</div>
+              <div class="font-semibold">${i.label || i.name}</div>
               <span class="status-dot ${cls}" title="${st}"></span>
             </div>
             <div class="text-xs text-slate-500 mt-1">${i.description || '—'}</div>
@@ -739,9 +739,10 @@
       document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
       const el = document.getElementById('view-' + viewId);
       if (el) el.classList.add('active');
-      if (viewId === 'credentials') renderCreds('all');
+      if (viewId === 'dashboard')    renderDashboard();
+      if (viewId === 'credentials')  renderCreds('all');
       if (viewId === 'integrations') renderIntegration(detailKey || integrations[0]?.key || 'samsara');
-      if (viewId === 'audit') renderAudit();
+      if (viewId === 'audit')        renderAudit();
     }
 
     function renderAudit() {
@@ -851,7 +852,7 @@
               return `
                 <a href="#integrations/${i.key}"
                    class="block px-3 py-2 text-sm border-b border-slate-100 last:border-b-0 ${active ? 'bg-blue-50 text-blue-800 font-semibold' : 'hover:bg-slate-50'}">
-                  <span class="status-dot ${cls}"></span> ${i.name}
+                  <span class="status-dot ${cls}"></span> ${i.label || i.name}
                 </a>`;
             }).join('')}
           </nav>
@@ -860,7 +861,7 @@
           <div class="bg-white border border-slate-200 rounded-lg p-5">
             <div class="flex items-center gap-2 mb-2">
               <span class="status-dot ${statusClass}"></span>
-              <h2 class="text-lg font-semibold">${intg.name}</h2>
+              <h2 class="text-lg font-semibold">${intg.label || intg.name}</h2>
               <span class="ml-auto text-xs text-slate-500 uppercase">${status}</span>
             </div>
             <p class="text-xs text-slate-500 mb-2">${intg.description || ''}</p>
@@ -926,6 +927,7 @@
     });
 
     // --- init ---------------------------------------------------------
+    renderDashboard();  // show mock cards immediately; initBackend will refresh with live data
     onHash();
     initBackend();
   </script>

@@ -511,6 +511,7 @@ def list_integrations(actor: str = Depends(_current_actor)) -> dict:
             {
                 "key":           i.key or i.name.lower().replace(" ", "-"),
                 "name":          i.name,
+                "label":         i.label or i.name,
                 "description":   i.description,
                 "notes":         i.notes,
                 "env_vars":      [ev.name for ev in i.env_vars],

@@ -50,6 +50,7 @@ class Integration:
     n8n_types: list[str]                = field(default_factory=list)
     probe: Optional[Callable[[], Tuple[bool, str]]] = None
     key: str                            = ""     # URL slug; auto-derived from name if empty
+    label: str                          = ""     # display name; falls back to name if empty
     description: str                    = ""     # one-line card subtitle shown in dashboard grid
     notes: str                          = ""     # longer summary shown in integration detail panel
     hidden: bool                        = False  # exclude from UI (infra/platform integrations)
@@ -119,8 +120,9 @@ INTEGRATIONS: list[Integration] = [
     ),
 
     Integration(
-        name="Tai TMS",
+        name="Tai",
         key="tai",
+        label="Tai TMS",
         description="API key · inbound + outbound",
         notes=(
             "Inbound webhooks accepted at /tai (API key auth via Kong). Events "
