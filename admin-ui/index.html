@@ -42,6 +42,9 @@
     #confirm-dialog .cd-body label { font-size: 0.75rem; text-transform: uppercase; color: #64748b; letter-spacing: 0.02em; }
     #confirm-dialog .cd-body input { width: 100%; border: 1px solid #cbd5e1; border-radius: 0.25rem; padding: 0.4rem 0.6rem; font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 0.875rem; }
     #confirm-dialog .cd-foot { padding: 0.75rem 1.25rem; background: #f8fafc; border-top: 1px solid #e2e8f0; display: flex; justify-content: flex-end; gap: 0.5rem; }
+    .catalog-chip { background:#f8fafc; border-color:#e2e8f0; color:#64748b; cursor:pointer; transition:all .1s; }
+    .catalog-chip:hover { border-color:#94a3b8; color:#334155; }
+    .catalog-chip-active { background:#1e40af; border-color:#1e40af; color:#fff !important; }
   </style>
 </head>
 <body class="bg-slate-50 text-slate-900 antialiased">
@@ -94,6 +97,9 @@
         <a href="#topology"     class="nav-link px-3 py-1.5 rounded hover:bg-slate-100 text-sm">Topology</a>
         <a href="#credentials"  class="nav-link px-3 py-1.5 rounded hover:bg-slate-100 text-sm">Credentials</a>
         <a href="#integrations" class="nav-link px-3 py-1.5 rounded hover:bg-slate-100 text-sm">Integrations</a>
+        <a href="#approvals"    class="nav-link px-3 py-1.5 rounded hover:bg-slate-100 text-sm hidden" id="nav-approvals">
+          Approvals <span id="approval-badge" class="ml-1 text-xs font-semibold bg-amber-500 text-white rounded-full px-1.5 py-0.5 hidden"></span>
+        </a>
         <a href="#audit"        class="nav-link px-3 py-1.5 rounded hover:bg-slate-100 text-sm">Audit log</a>
       </nav>
       <div class="flex items-center gap-3">
@@ -210,7 +216,19 @@
         <h1 class="text-2xl font-semibold tracking-tight">Connector Catalog</h1>
         <span id="catalog-env-badge" class="text-xs px-2 py-1 rounded bg-slate-100 text-slate-600"></span>
       </div>
-      <p class="text-slate-500 mb-6">Every connector type available on this gateway. Click <strong>Connect</strong> to run the setup wizard.</p>
+      <p class="text-slate-500 mb-4">Every connector type available on this gateway. Click <strong>Connect</strong> to run the setup wizard.</p>
+      <div class="flex items-center gap-3 mb-5">
+        <input id="catalog-search" type="text" placeholder="Search connectors…"
+               oninput="renderCatalog()"
+               class="w-64 text-sm border border-slate-300 rounded px-3 py-1.5 focus:outline-none focus:ring-1 focus:ring-blue-400">
+        <div class="flex gap-1" id="catalog-filter-chips">
+          <button data-filter="all"              onclick="setCatalogFilter('all')"              class="catalog-chip catalog-chip-active px-2.5 py-1 text-xs rounded-full border">All</button>
+          <button data-filter="active"           onclick="setCatalogFilter('active')"           class="catalog-chip px-2.5 py-1 text-xs rounded-full border">Active</button>
+          <button data-filter="pending_approval" onclick="setCatalogFilter('pending_approval')" class="catalog-chip px-2.5 py-1 text-xs rounded-full border">Pending</button>
+          <button data-filter="disabled"         onclick="setCatalogFilter('disabled')"         class="catalog-chip px-2.5 py-1 text-xs rounded-full border">Disabled</button>
+          <button data-filter="draft"            onclick="setCatalogFilter('draft')"            class="catalog-chip px-2.5 py-1 text-xs rounded-full border">Not connected</button>
+        </div>
+      </div>
       <div id="catalog-grid" class="grid grid-cols-3 gap-4"></div>
     </section>
 
@@ -218,8 +236,14 @@
     <!-- Topology                                              -->
     <!-- ==================================================== -->
     <section id="view-topology" class="view">
-      <h1 class="text-2xl font-semibold tracking-tight mb-1">Data Flow Topology</h1>
-      <p class="text-slate-500 mb-6">How data moves through the gateway — sources publish to Redpanda topics, sinks subscribe.</p>
+      <div class="flex items-center justify-between mb-1">
+        <h1 class="text-2xl font-semibold tracking-tight">Data Flow Topology</h1>
+        <button onclick="loadTopologyCounts()" id="btn-topo-counts"
+                class="px-3 py-1.5 text-sm border border-slate-300 rounded hover:bg-slate-50">
+          Load message counts
+        </button>
+      </div>
+      <p class="text-slate-500 mb-6">How data moves through the gateway — sources publish to Redpanda topics, sinks subscribe. Click a connector to view its detail.</p>
       <div id="topology-graph" class="bg-white border border-slate-200 rounded-lg p-6 overflow-x-auto"></div>
     </section>
 
@@ -275,6 +299,29 @@
           <button class="px-4 py-2 text-sm border border-slate-300 rounded hover:bg-slate-50" onclick="closeWizard()">Cancel</button>
           <button id="wizard-next"  class="px-4 py-2 text-sm bg-blue-600 hover:bg-blue-700 text-white rounded" onclick="wizardNext()">Next</button>
         </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ==================================================== -->
+  <!-- Reconfigure connector credentials modal               -->
+  <!-- ==================================================== -->
+  <div id="reconfigure-modal" class="fixed inset-0 bg-slate-900/50 z-50 hidden flex items-center justify-center p-6">
+    <div class="bg-white rounded-lg shadow-xl w-full max-w-lg">
+      <div class="px-6 py-4 border-b border-slate-200 flex items-center justify-between">
+        <h3 id="reconfigure-title" class="font-semibold">Edit credentials</h3>
+        <button class="text-slate-400 hover:text-slate-700 text-xl leading-none" onclick="closeReconfigureModal()">&times;</button>
+      </div>
+      <div class="px-6 py-5 space-y-4 max-h-[60vh] overflow-y-auto">
+        <p class="text-xs text-slate-500">Leave a field blank to keep the existing value. Only filled fields are updated.</p>
+        <div id="reconfigure-form" class="space-y-3"></div>
+        <div id="reconfigure-error" class="hidden text-xs text-red-700 bg-red-50 border border-red-200 rounded px-3 py-2"></div>
+      </div>
+      <div class="px-6 py-4 border-t border-slate-200 flex justify-end gap-3">
+        <button onclick="closeReconfigureModal()"
+                class="px-4 py-2 text-sm border border-slate-300 rounded hover:bg-slate-50">Cancel</button>
+        <button id="reconfigure-submit"
+                class="px-4 py-2 text-sm bg-blue-600 hover:bg-blue-700 text-white rounded">Save</button>
       </div>
     </div>
   </div>
@@ -382,6 +429,13 @@
     let n8nTypes = {};       // {typeId: {fields, secrets, label, hint}} from /api/health
     let auditRows = [];      // populated when live
     let pendingServices = []; // populated from /api/services/pending
+    let grafanaUrl = 'http://localhost:3002'; // overridden by /api/health
+
+    // Panel IDs for connectors that have dedicated Grafana rows
+    const GRAFANA_PANEL_MAP = {
+      samsara: 11,
+      tai:     21,
+    };
 
     function normalizeApiItem(it) {
       return {
@@ -399,7 +453,8 @@
         const h = await fetch('/api/health').then(r => r.ok ? r.json() : Promise.reject(r.status));
         sourcesState = h.sources || {};
         restartState = h.restart || {enabled: false};
-        n8nTypes = h.n8n_types || {};
+        n8nTypes     = h.n8n_types || {};
+        grafanaUrl   = h.grafana_url || grafanaUrl;
         const enabledSources = Object.entries(sourcesState).filter(([,v]) => v.enabled).map(([k]) => k);
         const writables = Object.entries(sourcesState).filter(([,v]) => v.writable).map(([k]) => k);
         // Fetch structure first, then credentials — renderDashboard needs both.
@@ -407,6 +462,7 @@
         await refreshCreds();
         await refreshAudit();
         await refreshPending();
+        await refreshApprovals();
         live = true;
         const banner = document.getElementById('status-banner');
         banner.className = 'bg-emerald-50 border-b border-emerald-200 text-emerald-900 text-sm px-4 py-2 text-center';
@@ -771,15 +827,25 @@
       // cards
       const grid = document.getElementById('integration-grid');
       grid.innerHTML = integrations.map(i => {
-        const st  = integrationStatus(i.name);
-        const cls = STATUS_CLASS[st] || 'status-unknown';
-        const sub = cardSubtext(i.name, st);
+        const st      = integrationStatus(i.name);
+        const cls     = STATUS_CLASS[st] || 'status-unknown';
+        const sub     = cardSubtext(i.name, st);
+        const panelId = GRAFANA_PANEL_MAP[i.key];
+        const grafUrl = panelId
+          ? `${grafanaUrl}/d/gateway-api-metrics?viewPanel=${panelId}`
+          : `${grafanaUrl}/d/gateway-api-metrics`;
         return `
           <div class="bg-white border border-slate-200 rounded-lg p-4 hover:border-blue-400 cursor-pointer"
                onclick="goto('integrations','${i.key}')">
             <div class="flex items-center justify-between">
               <div class="font-semibold">${i.label || i.name}</div>
-              <span class="status-dot ${cls}" title="${st}"></span>
+              <div class="flex items-center gap-2">
+                <a href="${grafUrl}" target="_blank" rel="noopener"
+                   onclick="event.stopPropagation()"
+                   title="Open in Grafana"
+                   class="text-slate-400 hover:text-orange-500 text-xs leading-none">▦</a>
+                <span class="status-dot ${cls}" title="${st}"></span>
+              </div>
             </div>
             <div class="text-xs text-slate-500 mt-1">${i.description || '—'}</div>
             <div class="text-xs text-slate-700 mt-3">${sub}</div>
@@ -803,16 +869,43 @@
       draft:             { text:'Not connected',    cls:'text-slate-500   bg-slate-100'  },
     };
 
+    let catalogFilter = 'all';
+
+    function setCatalogFilter(f) {
+      catalogFilter = f;
+      document.querySelectorAll('.catalog-chip').forEach(el => {
+        el.classList.toggle('catalog-chip-active', el.dataset.filter === f);
+      });
+      renderCatalog();
+    }
+
     function renderCatalog() {
       const badge = document.getElementById('catalog-env-badge');
       if (badge) badge.textContent = `env: ${gatewayEnv}`;
 
+      const searchVal = (document.getElementById('catalog-search')?.value || '').toLowerCase().trim();
+
       // Merge live connector types with mock integrations as fallback
-      const source = connectorTypes.length ? connectorTypes
+      let source = connectorTypes.length ? connectorTypes
         : integrations.map(i => ({ ...i, status: 'draft' }));
+
+      // Apply status filter
+      if (catalogFilter !== 'all') source = source.filter(ct => ct.status === catalogFilter);
+
+      // Apply text search (name, label, description, notes)
+      if (searchVal) source = source.filter(ct =>
+        (ct.name        || '').toLowerCase().includes(searchVal) ||
+        (ct.label       || '').toLowerCase().includes(searchVal) ||
+        (ct.description || '').toLowerCase().includes(searchVal) ||
+        (ct.notes       || '').toLowerCase().includes(searchVal)
+      );
 
       const grid = document.getElementById('catalog-grid');
       if (!grid) return;
+      if (!source.length) {
+        grid.innerHTML = `<div class="col-span-3 py-12 text-center text-sm text-slate-400">No connectors match your search.</div>`;
+        return;
+      }
       grid.innerHTML = source.map(ct => {
         const sl = STATUS_LABELS[ct.status] || STATUS_LABELS.draft;
         const isActive = ct.status === 'active';
@@ -837,12 +930,16 @@
               <span>${(ct.n8n_workflow_ids || []).length} workflow${(ct.n8n_workflow_ids||[]).length!==1?'s':''}</span>
             </div>
             <div class="flex gap-2 pt-1 border-t border-slate-100 mt-auto">
-              <button class="flex-1 px-3 py-1.5 text-sm border border-slate-300 rounded hover:bg-slate-50"
+              <button class="px-3 py-1.5 text-sm border border-slate-300 rounded hover:bg-slate-50"
                       onclick="goto('integrations','${ct.key}')">Details</button>
-              ${isActive
-                ? `<button class="flex-1 px-3 py-1.5 text-sm bg-emerald-50 text-emerald-700 border border-emerald-200 rounded cursor-default">Connected</button>`
-                : `<button class="flex-1 px-3 py-1.5 text-sm bg-blue-600 hover:bg-blue-700 text-white rounded"
-                           onclick="openWizard('${ct.key}')">Connect</button>`
+              ${sl.text === 'Disabled'
+                ? `<button class="flex-1 px-3 py-1.5 text-sm bg-emerald-600 hover:bg-emerald-700 text-white rounded"
+                           onclick="connectorLifecycle('${ct.key}','enable')">Enable</button>`
+                : isActive
+                  ? `<button class="flex-1 px-3 py-1.5 text-sm bg-emerald-50 text-emerald-700 border border-emerald-200 rounded hover:bg-red-50 hover:text-red-700 hover:border-red-200"
+                             onclick="connectorLifecycle('${ct.key}','disable')">Connected ✓</button>`
+                  : `<button class="flex-1 px-3 py-1.5 text-sm bg-blue-600 hover:bg-blue-700 text-white rounded"
+                             onclick="openWizard('${ct.key}')">Connect</button>`
               }
             </div>
           </div>`;
@@ -906,12 +1003,18 @@
                       pending_approval:'text-amber-700 bg-amber-50 border-amber-200',
                       disabled:'text-slate-400 bg-slate-50 border-slate-200' };
 
-      const nodeCard = (n, align='') => {
+      const nodeCard = (n) => {
         const cls = stCls[n.status] || stCls.draft;
-        return `<div class="border rounded px-3 py-2 text-sm font-medium ${cls} ${align}" data-topo-id="${n.id}">${n.label || n.id}</div>`;
+        return `<div class="border rounded px-3 py-2 text-sm font-medium cursor-pointer hover:shadow-sm ${cls}"
+                     data-topo-id="${n.id}"
+                     onclick="goto('integrations','${n.id}')"
+                     title="Open ${n.label || n.id} detail">${n.label || n.id}</div>`;
       };
       const topicPill = (t) =>
-        `<div class="border border-blue-200 bg-blue-50 text-blue-700 rounded-full px-3 py-1 text-xs font-mono" data-topo-id="${t.id}">${t.id}</div>`;
+        `<div class="border border-blue-200 bg-blue-50 text-blue-700 rounded-full px-3 py-1 text-xs font-mono" data-topo-id="${t.id}">
+          ${t.id}
+          <span id="topo-count-${t.id.replace(/[^a-z0-9]/g,'-')}" class="ml-1 text-blue-400"></span>
+        </div>`;
 
       // Build edge lookup: topic → {pubs: [], subs: []}
       const topicEdges = {};
@@ -1325,7 +1428,26 @@
         if (!r.ok) return;
         const d = await r.json();
         renderApprovals(d.items || []);
+        _updateApprovalBadge(d.items || [], d.env || 'dev');
       } catch (_) {}
+    }
+
+    function _updateApprovalBadge(items, env) {
+      const navLink = document.getElementById('nav-approvals');
+      const badge   = document.getElementById('approval-badge');
+      if (!navLink || !badge) return;
+      const count = items.length;
+      if (env === 'prod' || count > 0) {
+        navLink.classList.remove('hidden');
+      } else {
+        navLink.classList.add('hidden');
+      }
+      if (count > 0) {
+        badge.textContent = count;
+        badge.classList.remove('hidden');
+      } else {
+        badge.classList.add('hidden');
+      }
     }
 
     function renderApprovals(rows) {
@@ -1368,6 +1490,370 @@
         renderCatalog();
       } catch (e) {
         toastErr(`${decision} failed`, String(e.message || e));
+      }
+    }
+
+    // ── per-integration re-test ──────────────────────────────────────────
+    async function runIntegrationTest(key, name) {
+      const btn = document.getElementById(`btn-retest-${key}`);
+      const box = document.getElementById(`retest-result-${key}`);
+      if (!btn || !box) return;
+      btn.disabled = true;
+      btn.textContent = 'Testing…';
+      box.className = 'mt-3 p-3 rounded text-xs font-mono border bg-slate-50 border-slate-200';
+      box.textContent = 'Running probe…';
+      box.classList.remove('hidden');
+      try {
+        // Level 1: health probe
+        const r1 = await fetch(`/api/integrations/${name}/test`, { method: 'POST' });
+        const d1 = await r1.json().catch(() => ({}));
+        const l1ok = d1.ok !== false && r1.ok;
+        let lines = [`L1 probe: ${l1ok ? '✓ ok' : '✗ fail'}  ${d1.latency_ms != null ? d1.latency_ms + 'ms' : ''}  ${d1.detail || ''}`];
+
+        // Level 2: test event (if connector has topics)
+        const intg = connectorTypes.find(c => c.key === key);
+        if (intg && (intg.topics || []).length) {
+          lines.push('');
+          lines.push('Running test event…');
+          box.textContent = lines.join('\n');
+          const r2 = await fetch(`/api/connector-types/${key}/test-event`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ payload: null }),
+          });
+          const d2 = await r2.json().catch(() => ({}));
+          const l2ok = d2.ok;
+          lines[lines.length - 1] = `L2 event:  ${l2ok ? '✓ ok' : '✗ fail'}  ${d2.latency_ms != null ? d2.latency_ms + 'ms' : ''}  ${d2.detail || ''}`;
+          if (d2.correlation_id) lines.push(`corr: ${d2.correlation_id}`);
+        }
+
+        const allOk = l1ok;
+        box.className = `mt-3 p-3 rounded text-xs font-mono border ${allOk ? 'bg-emerald-50 border-emerald-200 text-emerald-900' : 'bg-red-50 border-red-200 text-red-900'}`;
+        box.textContent = lines.join('\n');
+      } catch (e) {
+        box.className = 'mt-3 p-3 rounded text-xs font-mono border bg-red-50 border-red-200 text-red-900';
+        box.textContent = `Error: ${e.message || e}`;
+      } finally {
+        btn.disabled = false;
+        btn.textContent = 'Run tests';
+      }
+    }
+
+    // ── live topic stats ─────────────────────────────────────────────────
+    async function loadTopicStats(key) {
+      const btn = document.getElementById(`btn-topic-stats-${key}`);
+      if (btn) { btn.textContent = 'Loading…'; btn.disabled = true; }
+      try {
+        const intg = connectorTypes.find(c => c.key === key) || integrations.find(i => i.key === key);
+        const topicNames = (intg?.topics || []).map(t => t.name);
+        if (!topicNames.length) return;
+
+        // Try watermarks first (Kafka protocol — gives message counts)
+        let watermarks = null;
+        try {
+          const rw = await fetch(`/api/topics/watermarks?topics=${encodeURIComponent(topicNames.join(','))}`);
+          if (rw.ok) {
+            const dw = await rw.json();
+            if (dw.reachable) watermarks = dw.topics;
+          }
+        } catch (_) {}
+
+        // Fallback: Admin API partition count only
+        const r = await fetch('/api/topics');
+        if (!r.ok) throw new Error(`${r.status}`);
+        const d = await r.json();
+        const byName = {};
+        (d.topics || []).forEach(t => { byName[t.name] = t; });
+
+        topicNames.forEach(name => {
+          const slug  = name.replace(/[^a-z0-9]/g, '-');
+          const badge = document.querySelector(`.topic-stat-badge-${slug}`);
+          if (!badge) return;
+
+          const wm   = watermarks?.[name];
+          const info = byName[name];
+
+          if (!wm && !info) {
+            badge.textContent = 'not found';
+            badge.className = `topic-stat-badge-${slug} text-xs text-red-500 self-center`;
+          } else if (wm?.exists === true) {
+            const msgs = wm.total_messages ?? '?';
+            badge.textContent = `${msgs.toLocaleString()} msgs · ${wm.partition_count}p`;
+            badge.className = `topic-stat-badge-${slug} text-xs text-emerald-700 bg-emerald-50 px-1.5 py-0.5 rounded self-center`;
+            badge.title = `Partitions: ${wm.partition_count}`;
+          } else if (info) {
+            badge.textContent = `${info.partition_count}p`;
+            badge.className = `topic-stat-badge-${slug} text-xs text-emerald-700 bg-emerald-50 px-1.5 py-0.5 rounded self-center`;
+            badge.title = 'Partition count only (kafka-python unavailable for message count)';
+          }
+        });
+        if (btn) { btn.textContent = 'Refresh'; btn.disabled = false; }
+      } catch (e) {
+        if (btn) { btn.textContent = 'Load stats'; btn.disabled = false; }
+        toastErr('Topic stats unavailable', String(e.message || e));
+      }
+    }
+
+    // ── connector lifecycle (disable / enable) ───────────────────────────
+    async function connectorLifecycle(key, action) {
+      try {
+        const r = await fetch(`/api/connector-types/${key}/${action}`, { method: 'POST' });
+        const d = await r.json().catch(() => ({}));
+        if (!r.ok) { toastErr(`${action} failed`, d.detail || r.statusText); return; }
+        const label = action === 'enable' ? 'enabled' : 'disabled';
+        toastOk(`Connector ${label}`);
+        await refreshConnectorTypes();
+        renderCatalog();
+        renderIntegration(key);
+      } catch (e) {
+        toastErr(`${action} failed`, String(e.message || e));
+      }
+    }
+
+    // ── n8n workflow live status ─────────────────────────────────────────
+    async function loadWorkflowStatus(key) {
+      const btn = document.getElementById(`btn-wf-status-${key}`);
+      if (btn) { btn.textContent = 'Loading…'; btn.disabled = true; }
+      try {
+        const r = await fetch('/api/workflows');
+        if (!r.ok) throw new Error(`${r.status}`);
+        const d = await r.json();
+        const byId = d.workflows || {};
+        const intg = connectorTypes.find(c => c.key === key) || integrations.find(i => i.key === key);
+        (intg?.n8n_workflow_ids || []).forEach(wid => {
+          const slug  = wid.replace(/[^a-z0-9]/g, '-');
+          const chip  = document.getElementById(`wf-chip-${slug}`);
+          if (!chip) return;
+          const info  = byId[wid];
+          if (!info) return;
+
+          const toggleAction = info.active ? 'deactivate' : 'activate';
+          const toggleLabel  = info.active ? '⏸' : '▶';
+          const toggleTitle  = info.active ? 'Deactivate workflow' : 'Activate workflow';
+
+          if (info.active === true) {
+            chip.className = 'text-xs font-mono px-2 py-1 bg-emerald-50 text-emerald-700 border border-emerald-300 rounded inline-flex items-center gap-1.5';
+            chip.title = `Active — ${info.name || wid}`;
+          } else if (info.active === false) {
+            chip.className = 'text-xs font-mono px-2 py-1 bg-slate-100 text-slate-500 border border-slate-300 rounded inline-flex items-center gap-1.5';
+            chip.title = `Inactive — ${info.name || wid}`;
+          } else {
+            chip.className = 'text-xs font-mono px-2 py-1 bg-amber-50 text-amber-700 border border-amber-300 rounded inline-flex items-center gap-1.5';
+            chip.title = info.error || 'not found in n8n';
+          }
+
+          // Inject toggle button if we know the state
+          if (info.active !== null && info.active !== undefined && !info.error) {
+            chip.innerHTML = `<span>${wid}</span><button
+              onclick="event.stopPropagation(); toggleWorkflow('${wid}','${toggleAction}','${key}')"
+              class="opacity-60 hover:opacity-100 ml-0.5"
+              title="${toggleTitle}">${toggleLabel}</button>`;
+          } else {
+            chip.textContent = wid;
+          }
+        });
+        if (btn) { btn.textContent = 'Refresh'; btn.disabled = false; }
+        if (!d.reachable) toastErr('n8n unreachable', d.error || '');
+      } catch (e) {
+        if (btn) { btn.textContent = 'Check status'; btn.disabled = false; }
+        toastErr('Workflow status unavailable', String(e.message || e));
+      }
+    }
+
+    // ── topology message counts ──────────────────────────────────────────
+    async function loadTopologyCounts() {
+      const btn = document.getElementById('btn-topo-counts');
+      if (btn) { btn.textContent = 'Loading…'; btn.disabled = true; }
+      try {
+        // Collect all topic names visible in the topology
+        const nodes = topoData.nodes.length ? topoData.nodes
+          : integrations.flatMap(i => (i.topics||[]).map(t => ({ id: t.name, type:'topic' })));
+        const topicNames = [...new Set(nodes.filter(n => n.type === 'topic').map(n => n.id))];
+        if (!topicNames.length) { if (btn) { btn.textContent = 'Load message counts'; btn.disabled = false; } return; }
+
+        const r = await fetch(`/api/topics/watermarks?topics=${encodeURIComponent(topicNames.join(','))}`);
+        if (!r.ok) throw new Error(`${r.status}`);
+        const d = await r.json();
+
+        if (!d.reachable) {
+          // Fall back to partition count from admin API
+          const r2 = await fetch('/api/topics');
+          if (r2.ok) {
+            const d2 = await r2.json();
+            (d2.topics || []).forEach(t => {
+              const slug = t.name.replace(/[^a-z0-9]/g, '-');
+              const el = document.getElementById(`topo-count-${slug}`);
+              if (el) { el.textContent = `${t.partition_count}p`; }
+            });
+          }
+        } else {
+          Object.entries(d.topics || {}).forEach(([name, info]) => {
+            const slug = name.replace(/[^a-z0-9]/g, '-');
+            const el = document.getElementById(`topo-count-${slug}`);
+            if (!el) return;
+            if (info.exists === false) {
+              el.textContent = '(no topic)';
+            } else if (info.total_messages != null) {
+              el.textContent = `· ${info.total_messages.toLocaleString()} msgs`;
+            }
+          });
+        }
+        if (btn) { btn.textContent = 'Refresh counts'; btn.disabled = false; }
+      } catch (e) {
+        if (btn) { btn.textContent = 'Load message counts'; btn.disabled = false; }
+        toastErr('Could not load topic counts', String(e.message || e));
+      }
+    }
+
+    // ── per-connector audit log ──────────────────────────────────────────
+    async function loadConnectorAudit(key) {
+      const el  = document.getElementById(`audit-log-${key}`);
+      const btn = document.getElementById(`btn-audit-${key}`);
+      if (!el) return;
+      el.innerHTML = '<div class="text-xs text-slate-400 py-2">Loading…</div>';
+      try {
+        const r = await fetch(`/api/audit?name=${encodeURIComponent(key)}&limit=20`);
+        if (!r.ok) throw new Error(`${r.status}`);
+        const d = await r.json();
+        if (!(d.items||[]).length) {
+          el.innerHTML = '<div class="text-xs text-slate-400 italic py-1">No audit events for this connector yet.</div>';
+          return;
+        }
+        el.innerHTML = `<table class="w-full text-xs">
+          <thead class="text-slate-400">
+            <tr><th class="text-left pb-1 pr-3">Time</th><th class="text-left pb-1 pr-3">Action</th><th class="text-left pb-1 pr-3">Actor</th><th class="text-left pb-1">Note</th></tr>
+          </thead>
+          <tbody class="divide-y divide-slate-100">
+            ${d.items.map(row => `
+              <tr>
+                <td class="py-1 pr-3 text-slate-500 whitespace-nowrap">${(row.ts||'').slice(0,16).replace('T',' ')}</td>
+                <td class="py-1 pr-3 font-mono">${row.action||''}</td>
+                <td class="py-1 pr-3 text-slate-500">${row.actor||''}</td>
+                <td class="py-1 text-slate-500 truncate max-w-xs">${row.note||''}</td>
+              </tr>`).join('')}
+          </tbody>
+        </table>`;
+        if (btn) { btn.textContent = 'Refresh'; }
+      } catch (e) {
+        el.innerHTML = `<div class="text-xs text-red-600">Failed: ${e.message||e}</div>`;
+      }
+    }
+
+    // ── Kong route health ────────────────────────────────────────────────
+    async function loadKongStatus(key) {
+      const btn = document.getElementById(`btn-kong-${key}`);
+      const el  = document.getElementById(`kong-status-${key}`);
+      if (!el) return;
+      if (btn) { btn.textContent = 'Checking…'; btn.disabled = true; }
+      try {
+        const r = await fetch(`/api/connector-types/${key}/kong-status`);
+        const d = await r.json().catch(() => ({}));
+        if (!d.kong_reachable) {
+          el.innerHTML = `<span class="text-xs text-slate-400">Kong unreachable${d.error ? ': '+d.error : ''}</span>`;
+          return;
+        }
+        const route = d.route;
+        const consumer = d.consumer;
+        const routeBadge = !route ? '' : route.status === 'ok'
+          ? `<span class="text-xs bg-emerald-50 text-emerald-700 border border-emerald-200 px-2 py-0.5 rounded">route ✓</span>`
+          : `<span class="text-xs bg-red-50 text-red-700 border border-red-200 px-2 py-0.5 rounded">route ${route.status}</span>`;
+        const consumerBadge = !consumer ? '' : consumer.status === 'ok'
+          ? `<span class="text-xs ${consumer.has_key ? 'bg-emerald-50 text-emerald-700 border-emerald-200' : 'bg-amber-50 text-amber-700 border-amber-200'} border px-2 py-0.5 rounded">
+               consumer ${consumer.has_key ? '✓ keyed' : '⚠ no key'}
+             </span>`
+          : `<span class="text-xs bg-red-50 text-red-700 border border-red-200 px-2 py-0.5 rounded">consumer ${consumer.status}</span>`;
+        el.innerHTML = `<div class="flex gap-2 flex-wrap">${routeBadge}${consumerBadge}</div>`;
+        if (btn) { btn.textContent = 'Refresh'; btn.disabled = false; }
+      } catch (e) {
+        el.innerHTML = `<span class="text-xs text-red-600">${e.message||e}</span>`;
+        if (btn) { btn.textContent = 'Check Kong'; btn.disabled = false; }
+      }
+    }
+
+    // ── workflow activate / deactivate toggle ────────────────────────────
+    async function toggleWorkflow(workflowId, action, connectorKey) {
+      try {
+        const r = await fetch(`/api/workflows/${encodeURIComponent(workflowId)}/${action}`, {
+          method: 'POST',
+        });
+        const d = await r.json().catch(() => ({}));
+        if (!r.ok) { toastErr(`Workflow ${action} failed`, d.detail || r.statusText); return; }
+        const state = d.active ? 'active' : 'inactive';
+        toastOk(`Workflow ${state}`, workflowId);
+        await loadWorkflowStatus(connectorKey);
+      } catch (e) {
+        toastErr(`Workflow ${action} failed`, String(e.message || e));
+      }
+    }
+
+    // ── reconfigure modal (credential-only update for active connectors) ─
+    function openReconfigureModal(key) {
+      const intg = connectorTypes.find(c => c.key === key) || integrations.find(i => i.key === key);
+      if (!intg) return;
+      const modal    = document.getElementById('reconfigure-modal');
+      const title    = document.getElementById('reconfigure-title');
+      const form     = document.getElementById('reconfigure-form');
+      const errBox   = document.getElementById('reconfigure-error');
+      if (!modal) return;
+      title.textContent = `Edit credentials — ${intg.label || intg.name}`;
+      errBox.classList.add('hidden'); errBox.textContent = '';
+      form.innerHTML = (intg.env_vars || []).map(ev => `
+        <div>
+          <label class="block text-xs font-medium text-slate-700 mb-1">${ev.name}</label>
+          <input type="${ev.kind === 'secret' ? 'password' : 'text'}"
+                 id="rc-field-${ev.name}"
+                 placeholder="Leave blank to keep existing value"
+                 autocomplete="off"
+                 class="w-full text-sm border border-slate-300 rounded px-2.5 py-1.5 focus:outline-none focus:ring-1 focus:ring-blue-400">
+          <div class="text-xs text-slate-400 mt-0.5">${ev.services ? ev.services.join(', ') : ''}</div>
+        </div>`).join('');
+      document.getElementById('reconfigure-submit').onclick = () => submitReconfigure(key, intg);
+      modal.classList.remove('hidden');
+    }
+
+    function closeReconfigureModal() {
+      document.getElementById('reconfigure-modal')?.classList.add('hidden');
+    }
+
+    async function submitReconfigure(key, intg) {
+      const errBox = document.getElementById('reconfigure-error');
+      const btn    = document.getElementById('reconfigure-submit');
+      errBox.classList.add('hidden');
+      const creds = {};
+      (intg.env_vars || []).forEach(ev => {
+        const val = (document.getElementById(`rc-field-${ev.name}`)?.value || '').trim();
+        if (val) creds[ev.name] = val;
+      });
+      if (!Object.keys(creds).length) {
+        errBox.textContent = 'No values entered — fill at least one field.';
+        errBox.classList.remove('hidden');
+        return;
+      }
+      btn.disabled = true; btn.textContent = 'Saving…';
+      try {
+        const r = await fetch(`/api/connector-types/${key}/reconfigure`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ creds }),
+        });
+        const d = await r.json().catch(() => ({}));
+        if (!r.ok) {
+          errBox.textContent = d.detail || r.statusText;
+          errBox.classList.remove('hidden');
+          return;
+        }
+        closeReconfigureModal();
+        const saved  = (d.creds || []).filter(c => c.status === 'saved').length;
+        const errors = (d.creds || []).filter(c => c.status === 'error').length;
+        if (errors) toastErr(`${errors} credential(s) failed to save`, '');
+        else toastOk(`${saved} credential(s) updated`, 'Restart affected services to apply.');
+        await refreshCreds();
+        renderIntegration(key);
+      } catch (e) {
+        errBox.textContent = String(e.message || e);
+        errBox.classList.remove('hidden');
+      } finally {
+        btn.disabled = false; btn.textContent = 'Save';
       }
     }
 
@@ -1573,31 +2059,60 @@
             <div class="flex items-center gap-2 mb-2">
               <span class="status-dot ${statusClass}"></span>
               <h2 class="text-lg font-semibold">${intg.label || intg.name}</h2>
-              <span class="ml-auto text-xs text-slate-500 uppercase">${status}</span>
+              <span class="text-xs text-slate-500 uppercase">${status}</span>
+              <div class="ml-auto flex items-center gap-1.5">
+                ${intg.has_probe ? `
+                <button onclick="runIntegrationTest('${intg.key}','${intg.name}')"
+                        id="btn-retest-${intg.key}"
+                        class="px-2.5 py-1 text-xs bg-slate-100 hover:bg-slate-200 border border-slate-300 rounded">
+                  Run tests
+                </button>` : ''}
+                ${status === 'disabled' ? `
+                <button onclick="connectorLifecycle('${intg.key}','enable')"
+                        class="px-2.5 py-1 text-xs bg-emerald-600 hover:bg-emerald-700 text-white rounded">
+                  Enable
+                </button>` : (status === 'active' || status === 'pending_approval') ? `
+                <button onclick="connectorLifecycle('${intg.key}','disable')"
+                        class="px-2.5 py-1 text-xs bg-slate-100 hover:bg-red-50 hover:text-red-700 hover:border-red-300 border border-slate-300 rounded">
+                  Disable
+                </button>` : ''}
+              </div>
             </div>
             <p class="text-xs text-slate-500 mb-2">${intg.description || ''}</p>
             <p class="text-sm text-slate-600">${intg.notes || 'No description available.'}</p>
+            <div id="retest-result-${intg.key}" class="hidden mt-3 p-3 rounded text-xs font-mono border"></div>
           </div>
           <div class="bg-white border border-slate-200 rounded-lg p-5">
-            <h3 class="text-sm font-semibold uppercase tracking-wide text-slate-500 mb-2">Credentials</h3>
+            <div class="flex items-center mb-2">
+              <h3 class="text-sm font-semibold uppercase tracking-wide text-slate-500">Credentials</h3>
+              ${(status === 'active' || status === 'disabled') && (intg.env_vars||[]).length ? `
+              <button onclick="openReconfigureModal('${intg.key}')"
+                      class="ml-auto text-xs text-blue-600 hover:underline">Edit credentials</button>` : ''}
+            </div>
             <div class="divide-y divide-slate-100">${relatedRows}</div>
           </div>
           ${(intg.topics||[]).length ? `
           <div class="bg-white border border-slate-200 rounded-lg p-5">
-            <h3 class="text-sm font-semibold uppercase tracking-wide text-slate-500 mb-3">Topics</h3>
-            <div class="space-y-2">
+            <div class="flex items-center mb-3">
+              <h3 class="text-sm font-semibold uppercase tracking-wide text-slate-500">Topics</h3>
+              <button onclick="loadTopicStats('${intg.key}')"
+                      id="btn-topic-stats-${intg.key}"
+                      class="ml-auto text-xs text-blue-600 hover:underline">Load stats</button>
+            </div>
+            <div class="space-y-2" id="topics-list-${intg.key}">
               ${(intg.topics||[]).map(t => `
-                <div class="flex items-start gap-3 p-2 bg-slate-50 rounded">
+                <div class="flex items-start gap-3 p-2 bg-slate-50 rounded" id="topic-row-${t.name.replace(/[^a-z0-9]/g,'-')}">
                   <span class="text-xs px-2 py-0.5 rounded mt-0.5 flex-shrink-0
                     ${t.direction==='publish'
                       ? 'bg-emerald-50 text-emerald-700 border border-emerald-200'
                       : 'bg-blue-50 text-blue-700 border border-blue-200'}">
                     ${t.direction==='publish'?'↑ pub':'↓ sub'}
                   </span>
-                  <div>
+                  <div class="flex-1">
                     <div class="font-mono text-sm">${t.name}</div>
                     <div class="text-xs text-slate-500 mt-0.5">${t.description||''}</div>
                   </div>
+                  <span class="topic-stat-badge-${t.name.replace(/[^a-z0-9]/g,'-')} text-xs text-slate-400 italic self-center"></span>
                 </div>`).join('')}
             </div>
           </div>` : ''}
@@ -1620,12 +2135,36 @@
           </div>` : ''}
           ${(intg.n8n_workflow_ids||[]).length ? `
           <div class="bg-white border border-slate-200 rounded-lg p-5">
-            <h3 class="text-sm font-semibold uppercase tracking-wide text-slate-500 mb-2">n8n Workflows</h3>
-            <div class="flex flex-wrap gap-2">
+            <div class="flex items-center mb-2">
+              <h3 class="text-sm font-semibold uppercase tracking-wide text-slate-500">n8n Workflows</h3>
+              <button onclick="loadWorkflowStatus('${intg.key}')"
+                      id="btn-wf-status-${intg.key}"
+                      class="ml-auto text-xs text-blue-600 hover:underline">Check status</button>
+            </div>
+            <div class="flex flex-wrap gap-2" id="workflows-list-${intg.key}">
               ${(intg.n8n_workflow_ids||[]).map(w=>`
-                <span class="text-xs font-mono px-2 py-1 bg-violet-50 text-violet-700 border border-violet-200 rounded">${w}</span>`).join('')}
+                <span id="wf-chip-${w.replace(/[^a-z0-9]/g,'-')}"
+                      class="text-xs font-mono px-2 py-1 bg-violet-50 text-violet-700 border border-violet-200 rounded">${w}</span>`).join('')}
             </div>
           </div>` : ''}
+          <div class="bg-white border border-slate-200 rounded-lg p-5">
+            <div class="flex items-center mb-2">
+              <h3 class="text-sm font-semibold uppercase tracking-wide text-slate-500">Kong Route</h3>
+              <button onclick="loadKongStatus('${intg.key}')"
+                      id="btn-kong-${intg.key}"
+                      class="ml-auto text-xs text-blue-600 hover:underline">Check Kong</button>
+            </div>
+            <div id="kong-status-${intg.key}" class="text-xs text-slate-400 italic">Not checked yet.</div>
+          </div>
+          <div class="bg-white border border-slate-200 rounded-lg p-5">
+            <div class="flex items-center mb-3">
+              <h3 class="text-sm font-semibold uppercase tracking-wide text-slate-500">Activity log</h3>
+              <button onclick="loadConnectorAudit('${intg.key}')"
+                      id="btn-audit-${intg.key}"
+                      class="ml-auto text-xs text-blue-600 hover:underline">Load</button>
+            </div>
+            <div id="audit-log-${intg.key}" class="text-xs text-slate-400 italic">Click Load to fetch recent events.</div>
+          </div>
         </section>
       `;
     }

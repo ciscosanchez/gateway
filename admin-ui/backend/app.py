@@ -204,7 +204,8 @@ def health(actor: str = Depends(_current_actor)) -> dict:
             "kong": {"enabled": kong_reachable(), "writable": kong_reachable()},
         },
         "n8n_types": {k: v for k, v in N8N_WRITABLE_TYPES.items()},
-        "restart": {"enabled": docker_ok},
+        "restart":     {"enabled": docker_ok},
+        "grafana_url": _GRAFANA_URL,
     }
 
 
@@ -554,6 +555,7 @@ _KONG_PROXY_URL     = os.getenv("KONG_PROXY_URL",     "http://kong:8000")
 _KONG_TIMEOUT       = float(os.getenv("KONG_TEST_TIMEOUT", "10"))
 _REDPANDA_ADMIN_URL = os.getenv("REDPANDA_ADMIN_URL", "http://redpanda-0:9644")
 _REDPANDA_REPLICAS  = int(os.getenv("REDPANDA_DEFAULT_REPLICAS", "3"))
+_GRAFANA_URL        = os.getenv("GRAFANA_URL", "http://localhost:3002")
 
 
 def _ensure_topics(topics: list, actor: str) -> list[dict]:
@@ -811,7 +813,7 @@ def test_event(
         if not ok:
             detail += f": {r.text[:200]}"
     except httpx.TimeoutException:
-        latency_ms = round(_KONG_TEST_TIMEOUT * 1000)
+        latency_ms = round(_KONG_TIMEOUT * 1000)
         ok, detail = False, "timeout waiting for Kong"
     except Exception as e:
         latency_ms = round((time.monotonic() - t0) * 1000)
@@ -834,6 +836,348 @@ def test_event(
         "payload_sent":   payload,
         "url":            url,
     }
+
+
+@app.get("/api/connector-types/{key}/kong-status", tags=["connectors"])
+def connector_kong_status(key: str, actor: str = Depends(_current_actor)) -> dict:
+    """Check whether this connector's Kong route and consumer exist and are enabled."""
+    import integrations as reg
+    from sources.kong_api import _client as kong_client, KONG_ADMIN_URL
+
+    intg = reg.BY_KEY.get(key)
+    if intg is None or intg.hidden:
+        raise HTTPException(status_code=404, detail=f"unknown connector '{key}'")
+
+    result: dict = {
+        "key":          key,
+        "kong_reachable": False,
+        "route":        None,
+        "consumer":     None,
+    }
+
+    try:
+        with kong_client() as c:
+            # Check route by name (Kong DB-less names routes like "samsara-inbound")
+            route_name = f"{key}-inbound"
+            r = c.get(f"/routes/{route_name}")
+            if r.status_code == 200:
+                rd = r.json()
+                result["route"] = {
+                    "name":    rd.get("name"),
+                    "paths":   rd.get("paths", []),
+                    "enabled": not rd.get("disabled", False),
+                    "status":  "ok",
+                }
+            elif r.status_code == 404:
+                result["route"] = {"name": route_name, "status": "missing"}
+            else:
+                result["route"] = {"name": route_name, "status": f"error:{r.status_code}"}
+
+            # Check consumer (if the integration has one)
+            if intg.kong_consumer:
+                cr = c.get(f"/consumers/{intg.kong_consumer}")
+                if cr.status_code == 200:
+                    cd = cr.json()
+                    # Check if consumer has at least one active key
+                    kr = c.get(f"/consumers/{intg.kong_consumer}/key-auth")
+                    keys = (kr.json().get("data") or []) if kr.status_code == 200 else []
+                    result["consumer"] = {
+                        "username": cd.get("username"),
+                        "has_key":  len(keys) > 0,
+                        "status":   "ok",
+                    }
+                elif cr.status_code == 404:
+                    result["consumer"] = {"username": intg.kong_consumer, "status": "missing"}
+                else:
+                    result["consumer"] = {"username": intg.kong_consumer, "status": f"error:{cr.status_code}"}
+
+            result["kong_reachable"] = True
+    except Exception as e:
+        result["error"] = str(e)[:200]
+
+    return result
+
+
+@app.post("/api/connector-types/{key}/disable", tags=["connectors"])
+def disable_connector(
+    key: str, req: Request,
+    actor: str = Depends(_current_actor),
+) -> dict:
+    import integrations as reg
+    intg = reg.BY_KEY.get(key)
+    if intg is None or intg.hidden:
+        raise HTTPException(status_code=404, detail=f"unknown connector '{key}'")
+    state = connector_store.get_state(key)
+    if state and state.get("status") == "disabled":
+        return {"key": key, "status": "disabled", "note": "already disabled"}
+    connector_store.disable(key)
+    audit.record(
+        action="disable", source="connector",
+        name=key, integration=intg.name,
+        client_ip=_client_ip(req), actor=actor,
+    )
+    return {"key": key, "status": "disabled"}
+
+
+@app.post("/api/connector-types/{key}/enable", tags=["connectors"])
+def enable_connector(
+    key: str, req: Request,
+    actor: str = Depends(_current_actor),
+) -> dict:
+    """Re-activate a disabled connector without re-running the full wizard.
+
+    Credentials are already in .env / Kong; this just flips the activation
+    state (immediate in dev, queued in prod).
+    """
+    import integrations as reg
+    intg = reg.BY_KEY.get(key)
+    if intg is None or intg.hidden:
+        raise HTTPException(status_code=404, detail=f"unknown connector '{key}'")
+    result = connector_store.activate(key, actor)
+    audit.record(
+        action="enable", source="connector",
+        name=key, integration=intg.name,
+        note=f"re-enabled; status={result['status']}",
+        client_ip=_client_ip(req), actor=actor,
+    )
+    return {**result, "key": key}
+
+
+@app.post("/api/connector-types/{key}/reconfigure", tags=["connectors"])
+def reconfigure_connector(
+    key: str,
+    body: ActivateReq,
+    req: Request,
+    actor: str = Depends(_current_actor),
+) -> dict:
+    """Update credentials on an active connector without touching topics or state.
+
+    Accepts the same {creds} shape as /activate but skips topic creation and
+    activation-state changes. Use this to rotate a key on a live connector.
+    """
+    import integrations as reg
+    intg = reg.BY_KEY.get(key)
+    if intg is None or intg.hidden:
+        raise HTTPException(status_code=404, detail=f"unknown connector '{key}'")
+
+    cred_results: list[dict] = []
+    if body.creds:
+        for ev in intg.env_vars:
+            value = body.creds.get(ev.name, "").strip()
+            if not value:
+                continue
+            is_kong_only = ev.services == ["kong"] or (
+                intg.kong_consumer and
+                ("INBOUND_API_KEY" in ev.name or "WEBHOOK_SECRET" in ev.name)
+                and "kong" in ev.services
+            )
+            try:
+                if is_kong_only and intg.kong_consumer:
+                    set_kong_key(intg.kong_consumer, value)
+                    cred_results.append({"name": ev.name, "target": "kong", "status": "saved"})
+                else:
+                    set_env_credential(ev.name, value)
+                    audit.mark_restart_pending(ev.services)
+                    cred_results.append({"name": ev.name, "target": "env", "status": "saved"})
+                audit.record(
+                    action="update",
+                    source="kong" if is_kong_only else "env",
+                    name=ev.name,
+                    integration=intg.name,
+                    note="reconfigure (credential rotation)",
+                    client_ip=_client_ip(req),
+                    actor=actor,
+                )
+            except Exception as e:
+                cred_results.append({"name": ev.name, "status": "error", "detail": str(e)[:200]})
+
+    return {"key": key, "creds": cred_results, "status": "reconfigured"}
+
+
+@app.post("/api/workflows/{workflow_id}/activate", tags=["connectors"])
+def workflow_activate(
+    workflow_id: str, req: Request,
+    actor: str = Depends(_current_actor),
+) -> dict:
+    """Activate an n8n workflow by ID."""
+    return _toggle_workflow(workflow_id, activate=True, actor=actor, req=req)
+
+
+@app.post("/api/workflows/{workflow_id}/deactivate", tags=["connectors"])
+def workflow_deactivate(
+    workflow_id: str, req: Request,
+    actor: str = Depends(_current_actor),
+) -> dict:
+    """Deactivate an n8n workflow by ID."""
+    return _toggle_workflow(workflow_id, activate=False, actor=actor, req=req)
+
+
+def _toggle_workflow(workflow_id: str, *, activate: bool, actor: str, req) -> dict:
+    from sources.n8n_api import _client as n8n_client, N8NError
+    action = "activate" if activate else "deactivate"
+    # n8n public API: POST /api/v1/workflows/{id}/activate  |  /deactivate
+    # Internal API:   PATCH /rest/workflows/{id}  body: {active: bool}
+    import os as _os
+    use_public = bool(_os.getenv("N8N_API_KEY"))
+    try:
+        with n8n_client() as c:
+            if use_public:
+                path = f"/api/v1/workflows/{workflow_id}/{action}"
+                r = c.post(path)
+            else:
+                r = c.patch(
+                    f"/rest/workflows/{workflow_id}",
+                    json={"active": activate},
+                )
+        if r.status_code >= 400:
+            raise HTTPException(
+                status_code=502,
+                detail=f"n8n returned {r.status_code}: {r.text[:200]}",
+            )
+        data   = r.json() if r.text else {}
+        result = data.get("data", data) if isinstance(data, dict) else {}
+        active = result.get("active", activate)
+        audit.record(
+            action=action,
+            source="n8n",
+            name=workflow_id,
+            note=f"active={active}",
+            client_ip=_client_ip(req),
+            actor=actor,
+        )
+        return {"workflow_id": workflow_id, "active": active}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"n8n unreachable: {e}")
+
+
+@app.get("/api/workflows", tags=["connectors"])
+def list_workflow_statuses(actor: str = Depends(_current_actor)) -> dict:
+    """Return live active/inactive status for every workflow ID known to integrations.py."""
+    import integrations as reg
+    from sources.n8n_api import _client as n8n_client
+
+    all_ids: set[str] = set()
+    for intg in reg.INTEGRATIONS:
+        all_ids.update(intg.n8n_workflow_ids or [])
+
+    if not all_ids:
+        return {"workflows": {}, "reachable": False}
+
+    path = "/api/v1/workflows" if os.getenv("N8N_API_KEY") else "/rest/workflows"
+    try:
+        with n8n_client() as c:
+            r = c.get(path, params={"limit": 250})
+        if r.status_code >= 400:
+            return {"workflows": {}, "reachable": False, "error": f"n8n {r.status_code}"}
+        data  = r.json()
+        rows  = data.get("data", data) if isinstance(data, dict) else data
+        by_id: dict[str, dict] = {}
+        for row in (rows or []):
+            wid = str(row.get("id") or "")
+            if wid in all_ids:
+                by_id[wid] = {
+                    "id":         wid,
+                    "name":       row.get("name", ""),
+                    "active":     bool(row.get("active", False)),
+                    "updated_at": row.get("updatedAt"),
+                }
+        for wid in all_ids:
+            if wid not in by_id:
+                by_id[wid] = {"id": wid, "active": None, "error": "not found in n8n"}
+        return {"workflows": by_id, "reachable": True}
+    except Exception as e:
+        return {"workflows": {}, "reachable": False, "error": str(e)[:200]}
+
+
+@app.get("/api/topics", tags=["connectors"])
+def list_topics(actor: str = Depends(_current_actor)) -> dict:
+    """Return all Redpanda topics with partition metadata from the Admin API."""
+    import httpx
+    try:
+        r = httpx.get(f"{_REDPANDA_ADMIN_URL}/v1/topics", timeout=5)
+        if r.status_code != 200:
+            return {"topics": [], "error": f"Redpanda returned {r.status_code}", "reachable": False}
+        raw = r.json()
+        # Redpanda returns a list; normalise to {name, partition_count, replication_factor}
+        topics = []
+        for t in (raw if isinstance(raw, list) else []):
+            name = t.get("name") or t.get("topic_name", "")
+            if not name or name.startswith("_"):   # skip internal topics
+                continue
+            topics.append({
+                "name":               name,
+                "partition_count":    t.get("partition_count", len(t.get("partitions", []))),
+                "replication_factor": t.get("replication_factor", 1),
+            })
+        return {"topics": topics, "count": len(topics), "reachable": True}
+    except Exception as e:
+        return {"topics": [], "error": str(e)[:200], "reachable": False}
+
+
+_KAFKA_BOOTSTRAP = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "redpanda-0:9092")
+
+
+@app.get("/api/topics/watermarks", tags=["connectors"])
+def topic_watermarks(
+    topics: str = Query(description="Comma-separated topic names"),
+    actor: str = Depends(_current_actor),
+) -> dict:
+    """Return high-water marks (message counts) for the requested topics.
+
+    Uses the Kafka protocol (kafka-python) against Redpanda. Falls back
+    gracefully if the broker is unreachable.
+    """
+    topic_list = [t.strip() for t in topics.split(",") if t.strip()]
+    if not topic_list:
+        raise HTTPException(status_code=400, detail="topics query param is required")
+    try:
+        from kafka import KafkaAdminClient, KafkaConsumer
+        from kafka.structs import TopicPartition
+
+        consumer = KafkaConsumer(
+            bootstrap_servers=_KAFKA_BOOTSTRAP,
+            client_id="admin-ui-watermark",
+            request_timeout_ms=5000,
+            connections_max_idle_ms=10000,
+        )
+        result = {}
+        for topic in topic_list:
+            try:
+                partitions = consumer.partitions_for_topic(topic)
+                if partitions is None:
+                    result[topic] = {"exists": False}
+                    continue
+                tps = [TopicPartition(topic, p) for p in partitions]
+                end_offsets   = consumer.end_offsets(tps)
+                begin_offsets = consumer.beginning_offsets(tps)
+                total = sum(
+                    max(0, end_offsets[tp] - begin_offsets[tp])
+                    for tp in tps
+                )
+                result[topic] = {
+                    "exists":          True,
+                    "partition_count": len(partitions),
+                    "total_messages":  total,
+                    "partitions": [
+                        {
+                            "partition": tp.partition,
+                            "low":       begin_offsets[tp],
+                            "high":      end_offsets[tp],
+                            "messages":  max(0, end_offsets[tp] - begin_offsets[tp]),
+                        }
+                        for tp in sorted(tps, key=lambda x: x.partition)
+                    ],
+                }
+            except Exception as e:
+                result[topic] = {"exists": None, "error": str(e)[:200]}
+        consumer.close()
+        return {"topics": result, "reachable": True}
+    except ImportError:
+        return {"topics": {}, "reachable": False, "error": "kafka-python not installed"}
+    except Exception as e:
+        return {"topics": {}, "reachable": False, "error": str(e)[:200]}
 
 
 @app.get("/api/topology", tags=["connectors"])

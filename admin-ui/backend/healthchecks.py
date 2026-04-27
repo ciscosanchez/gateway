@@ -119,6 +119,48 @@ def _tai() -> Tuple[bool, str]:
     return False, f"Tai API returned {r.status_code}"
 
 
+def _wms() -> Tuple[bool, str]:
+    api_url = _env_val("WMS_API_URL")
+    api_key = _env_val("WMS_API_KEY")
+    if not api_url or api_url == "CHANGE_ME":
+        return False, "WMS_API_URL not set"
+    if not api_key or api_key == "CHANGE_ME":
+        return False, "WMS_API_KEY not set"
+    with httpx.Client(timeout=10.0) as c:
+        r = c.get(
+            api_url.rstrip("/") + "/health",
+            headers={"X-API-Key": api_key},
+        )
+    if r.status_code in (200, 401):
+        return r.status_code == 200, (
+            "WMS API reachable, key accepted" if r.status_code == 200
+            else "WMS rejected the API key (401)"
+        )
+    # 404 is acceptable — WMS may not have a /health route but auth passed
+    if r.status_code == 404:
+        return True, "WMS API reachable (404 on /health, key likely valid)"
+    return False, f"WMS returned {r.status_code}"
+
+
+def _dispatch() -> Tuple[bool, str]:
+    api_url = _env_val("DISPATCH_API_URL")
+    api_key = _env_val("DISPATCH_API_KEY")
+    if not api_url or api_url == "CHANGE_ME":
+        return False, "DISPATCH_API_URL not set"
+    if not api_key or api_key == "CHANGE_ME":
+        return False, "DISPATCH_API_KEY not set"
+    with httpx.Client(timeout=10.0) as c:
+        r = c.get(
+            api_url.rstrip("/") + "/health",
+            headers={"X-API-Key": api_key},
+        )
+    if r.status_code in (200, 404):
+        return True, f"Dispatch API reachable ({r.status_code})"
+    if r.status_code == 401:
+        return False, "Dispatch rejected the API key (401)"
+    return False, f"Dispatch returned {r.status_code}"
+
+
 # ── registry wiring ───────────────────────────────────────────────────────────
 # Map integration names to probe functions, then patch them back into the
 # Integration objects in the central registry so probe_for_integration() works.
@@ -128,6 +170,8 @@ _PROBE_FUNCTIONS: dict[str, Callable[[], Tuple[bool, str]]] = {
     "Unigroup": _unigroup,
     "NetSuite": _netsuite,
     "Tai":      _tai,
+    "WMS":      _wms,
+    "Dispatch": _dispatch,
 }
 
 for _intg in reg.INTEGRATIONS:

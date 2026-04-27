@@ -1,12 +1,20 @@
 #!/usr/bin/env bash
 # Creates Redpanda topics for the Gateway platform.
-# Runs against the 3-node cluster. Safe to re-run (idempotent).
+# Safe to re-run (idempotent — existing topics are skipped).
+#
+# Single-node override:
+#   REPLICAS=1 bash scripts/create-topics.sh
+# The default (3) is correct for a multi-node cluster.
 set -euo pipefail
 
 BROKER="${BROKER:-redpanda-0:29092}"
 CONTAINER="${CONTAINER:-gateway-redpanda-0}"
+# Allow single-node override: REPLICAS=1 ./create-topics.sh
+REPLICAS="${REPLICAS:-3}"
+# min.insync.replicas must be <= REPLICAS; use REPLICAS-1 (floor 1)
+MIN_ISR=$(( REPLICAS > 1 ? REPLICAS - 1 : 1 ))
 
-echo "📨 Creating Redpanda topics on ${BROKER}..."
+echo "📨 Creating Redpanda topics on ${BROKER} (replicas=${REPLICAS}, min_isr=${MIN_ISR})..."
 
 # topic_name partitions replication retention_ms compression
 topics=(
@@ -45,18 +53,20 @@ topics=(
 for row in "${topics[@]}"; do
   # shellcheck disable=SC2086
   set -- $row
-  name=$1; partitions=$2; replication=$3; retention=$4; compression=$5
+  name=$1; partitions=$2; _default_replication=$3; retention=$4; compression=$5
+  # Use the REPLICAS override (single-node) or the per-topic default
+  effective_replication="${REPLICAS}"
 
   echo ""
-  echo "→ ${name}  (p=${partitions} r=${replication} retention=${retention}ms compression=${compression})"
+  echo "→ ${name}  (p=${partitions} r=${effective_replication} isr=${MIN_ISR} retention=${retention}ms compression=${compression})"
 
   docker exec "${CONTAINER}" rpk topic create "${name}" \
     --brokers "${BROKER}" \
     --partitions "${partitions}" \
-    --replicas "${replication}" \
+    --replicas "${effective_replication}" \
     -c "retention.ms=${retention}" \
     -c "compression.type=${compression}" \
-    -c "min.insync.replicas=2" \
+    -c "min.insync.replicas=${MIN_ISR}" \
     -c "cleanup.policy=delete" \
     -c "max.message.bytes=1048576" \
     2>&1 | grep -vE "already exists|WARN" || true

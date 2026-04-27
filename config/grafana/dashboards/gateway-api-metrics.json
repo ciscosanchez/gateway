@@ -1,5 +1,6 @@
 {
   "dashboard": {
+    "uid": "gateway-api-metrics",
     "title": "Gateway API Metrics",
     "tags": ["gateway", "kong", "api"],
     "timezone": "browser",

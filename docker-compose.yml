@@ -655,6 +655,15 @@ services:
       # phase E1 (reads only). Phase E2 will edit kong/kong.yml and reload
       # Kong via POST /config.
       KONG_ADMIN_URL: http://kong:8001
+      # Redpanda Admin API — used for topic auto-creation at connector activate time.
+      REDPANDA_ADMIN_URL: http://redpanda-0:9644
+      # Kafka bootstrap — used for watermark/offset queries via kafka-python.
+      KAFKA_BOOTSTRAP_SERVERS: redpanda-0:9092
+      # Controls activation flow: dev=immediate, prod=approval queue.
+      GATEWAY_ENV: ${GATEWAY_ENV:-dev}
+      # Grafana base URL as seen from the *browser* (not the docker network).
+      # Used to generate deep-links from the admin UI to integration dashboards.
+      GRAFANA_URL: ${GRAFANA_URL:-http://localhost:3002}
     volumes:
       # .env mounted RW so writes apply on save.
       - ./.env:/app/env/.env:rw
