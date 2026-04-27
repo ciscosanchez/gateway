@@ -663,12 +663,50 @@
     }
     // ── integration registry (populated from /api/integrations; mock fallback below) ──
     const MOCK_INTEGRATIONS = [
-      { key:'samsara',  name:'Samsara',  label:'Samsara',          description:'Inbound webhook · HMAC-SHA256', notes:'Inbound webhook flow. Kong verifies HMAC-SHA256 signature before n8n sees the payload. Events published to samsara-events topic. PII stripped before publish.' },
-      { key:'netsuite', name:'NetSuite', label:'NetSuite',          description:'OAuth1 TBA · bidirectional',    notes:'Outbound workflow (netsuite-create-sales-order.json) complete. Blocked on OAuth1 TBA credentials: NETSUITE_CONSUMER_KEY / _SECRET / TOKEN_ID / TOKEN_SECRET.' },
-      { key:'unigroup', name:'Unigroup', label:'Unigroup Converge', description:'OAuth2 + GraphQL · outbound',  notes:'OAuth2 client_credentials + GraphQL. Outbound workflow scaffolded. Blocked on Keycloak client credentials from Unigroup. Also need: scope value + webhook vs poll confirmation.' },
-      { key:'tai',      name:'Tai',      label:'Tai TMS',           description:'API key · inbound + outbound',  notes:'Inbound webhooks accepted at /tai (API key auth). Events routed to tai-bills, tai-invoices, tai-shipments, tai-customers, tai-carriers topics. Outbound: tai-out + tai-updates. Live in beta — key rotates 1st of each month. Contact: Kyle Wang.' },
-      { key:'wms',      name:'WMS',      label:'WMS',               description:'REST · outbound (stub)',        notes:'Route exists in kong.yml. No workflow wired yet.' },
-      { key:'dispatch', name:'Dispatch', label:'Dispatch',          description:'REST · outbound (stub)',        notes:'Not scaffolded yet.' },
+      { key:'samsara',  name:'Samsara',  label:'Samsara',          status:'active',
+        description:'Inbound webhook · HMAC-SHA256',
+        notes:'Inbound webhook flow. Kong verifies HMAC-SHA256 signature before n8n sees the payload. Events published to samsara-events topic. PII stripped before publish.',
+        topics:[{name:'samsara-events',direction:'publish',description:'All normalised inbound Samsara webhook events.'}],
+        field_schema:[{name:'event_type',type:'string',description:'Samsara event type',required:true},{name:'vehicle_id',type:'string',description:'Vehicle ID',required:true},{name:'timestamp',type:'string',description:'ISO-8601',required:true},{name:'lat',type:'number',description:'Latitude',required:false},{name:'lng',type:'number',description:'Longitude',required:false}],
+        transformations:[{source:'eventType',target:'event_type',transform:'rename',note:''},{source:'vehicle.id',target:'vehicle_id',transform:'rename',note:''},{source:'driver.name',target:'driver_name',transform:'redact',note:'PII'}],
+        n8n_workflow_ids:['samsara-webhook-to-kafka'] },
+      { key:'netsuite', name:'NetSuite', label:'NetSuite',          status:'draft',
+        description:'OAuth1 TBA · bidirectional',
+        notes:'Outbound workflow complete. Blocked on OAuth1 TBA credentials.',
+        topics:[{name:'netsuite-inbound',direction:'publish',description:'Change events from NetSuite.'},{name:'netsuite-outbound',direction:'subscribe',description:'Records to create in NetSuite.'}],
+        field_schema:[{name:'record_type',type:'string',description:'NetSuite record type',required:true},{name:'record_id',type:'string',description:'Internal ID',required:true},{name:'action',type:'string',description:'create|update|delete',required:true},{name:'data',type:'object',description:'Record fields',required:true}],
+        transformations:[{source:'type',target:'record_type',transform:'rename',note:''},{source:'id',target:'record_id',transform:'rename',note:''}],
+        n8n_workflow_ids:['netsuite-webhook-to-kafka','netsuite-create-sales-order'] },
+      { key:'unigroup', name:'Unigroup', label:'Unigroup Converge', status:'draft',
+        description:'OAuth2 + GraphQL · outbound',
+        notes:'OAuth2 client_credentials + GraphQL. Outbound workflow scaffolded. Blocked on credentials.',
+        topics:[{name:'unigroup-outbound',direction:'subscribe',description:'Move and dispatch records to push to Unigroup.'}],
+        field_schema:[{name:'move_id',type:'string',description:'Move reference',required:true},{name:'move_type',type:'string',description:'local|longhaul|shuttle',required:true},{name:'origin',type:'object',description:'Origin location',required:true},{name:'destination',type:'object',description:'Destination location',required:true}],
+        transformations:[{source:'id',target:'move_id',transform:'rename',note:''},{source:'type',target:'move_type',transform:'rename',note:''}],
+        n8n_workflow_ids:['unigroup-outbound-processor'] },
+      { key:'tai',      name:'Tai',      label:'Tai TMS',           status:'active',
+        description:'API key · inbound + outbound',
+        notes:'Inbound webhooks at /tai. Events routed to tai-* topics. Outbound: tai-out + tai-updates. Live in beta — key rotates 1st of month.',
+        topics:[
+          {name:'tai-bills',direction:'publish',description:'Bill records.'},{name:'tai-invoices',direction:'publish',description:'Invoice records.'},
+          {name:'tai-shipments',direction:'publish',description:'Shipment records.'},{name:'tai-customers',direction:'publish',description:'Customer records.'},
+          {name:'tai-carriers',direction:'publish',description:'Carrier records.'},{name:'tai-out',direction:'subscribe',description:'Outbound to Tai API.'},
+          {name:'tai-updates',direction:'subscribe',description:'Partial updates to Tai API.'}],
+        field_schema:[{name:'webhook_type',type:'string',description:'Tai webhook type',required:true},{name:'correlation_id',type:'string',description:'Correlation ID',required:true},{name:'entity_id',type:'string',description:'Entity primary key',required:true},{name:'payload',type:'object',description:'Full entity snapshot',required:true}],
+        transformations:[{source:'correlationId',target:'correlation_id',transform:'rename',note:''},{source:'data.id',target:'entity_id',transform:'rename',note:''},{source:'data',target:'payload',transform:'passthrough',note:''}],
+        n8n_workflow_ids:['tai-webhook-to-kafka','tai-outbound-processor'] },
+      { key:'wms',      name:'WMS',      label:'WMS',               status:'draft',
+        description:'REST · outbound (stub)',
+        notes:'Route exists in kong.yml. No workflow wired yet.',
+        topics:[{name:'wms-outbound',direction:'subscribe',description:'Pick, pack, ship instructions.'}],
+        field_schema:[{name:'order_id',type:'string',description:'Order reference',required:true},{name:'action',type:'string',description:'pick|pack|ship',required:true},{name:'sku',type:'string',description:'Product SKU',required:true}],
+        transformations:[], n8n_workflow_ids:[] },
+      { key:'dispatch', name:'Dispatch', label:'Dispatch',          status:'draft',
+        description:'REST · outbound (stub)',
+        notes:'Not scaffolded yet.',
+        topics:[{name:'dispatch-outbound',direction:'subscribe',description:'Driver dispatch instructions.'}],
+        field_schema:[{name:'dispatch_id',type:'string',description:'Dispatch ID',required:true},{name:'driver_id',type:'string',description:'Driver to assign',required:true},{name:'vehicle_id',type:'string',description:'Vehicle',required:true}],
+        transformations:[], n8n_workflow_ids:[] },
     ];
     let integrations = MOCK_INTEGRATIONS.slice();
 
@@ -709,8 +747,16 @@
 
     async function refreshIntegrations() {
       try {
-        const r = await fetch('/api/integrations');
-        if (r.ok) integrations = (await r.json()).integrations || integrations;
+        // Prefer the richer /api/connector-types (includes topics/schema/mappings).
+        // Fall back to /api/integrations if connector-types isn't available yet.
+        const r = await fetch('/api/connector-types');
+        if (r.ok) {
+          const d = await r.json();
+          const cts = d.connector_types || [];
+          if (cts.length) { integrations = cts; return; }
+        }
+        const r2 = await fetch('/api/integrations');
+        if (r2.ok) integrations = (await r2.json()).integrations || integrations;
       } catch (_) { /* keep mock */ }
     }
 
@@ -817,9 +863,33 @@
       const el = document.getElementById('topology-graph');
       if (!el) return;
 
-      const { nodes, edges } = topoData;
+      // Build topology from mock integrations when backend data is unavailable
+      let { nodes, edges } = topoData;
       if (!nodes.length) {
-        el.innerHTML = '<div class="text-sm text-slate-400 italic">No topology data yet. Start the backend to load live data.</div>';
+        nodes = []; edges = [];
+        const topicSet = new Set();
+        integrations.forEach(i => {
+          if (!(i.topics && i.topics.length)) return;
+          const hasPub = i.topics.some(t => t.direction === 'publish');
+          const hasSub = i.topics.some(t => t.direction === 'subscribe');
+          nodes.push({
+            id: i.key, label: i.label || i.name, type: 'connector',
+            direction: hasPub && hasSub ? 'bidirectional' : hasPub ? 'source' : 'sink',
+            status: 'draft',
+          });
+          i.topics.forEach(t => {
+            if (!topicSet.has(t.name)) {
+              topicSet.add(t.name);
+              nodes.push({ id: t.name, label: t.name, type: 'topic' });
+            }
+            if (t.direction === 'publish') edges.push({ from: i.key,  to: t.name, label: 'pub' });
+            else                           edges.push({ from: t.name, to: i.key,  label: 'sub' });
+          });
+        });
+      }
+
+      if (!nodes.length) {
+        el.innerHTML = '<div class="text-sm text-slate-400 italic">No topology data available.</div>';
         return;
       }
 
@@ -1094,6 +1164,20 @@
                  <div class="text-lg font-semibold text-amber-700">Pending approval</div>
                  <div class="text-sm text-slate-500 mt-1">Approval ID: <code>${ar.approval_id}</code></div>
                  <div class="text-sm text-slate-500 mt-1">A team member must approve this before the connector goes live.</div>`}
+            ${(ar.creds||[]).length || (ar.topics||[]).length ? `
+            <div class="mt-4 text-left space-y-1">
+              ${(ar.topics||[]).map(t=>`
+                <div class="text-xs flex items-center gap-2">
+                  <span class="${t.status==='error'?'text-red-500':'text-emerald-600'}">${t.status==='created'?'✓ created':t.status==='exists'?'↩ exists':'✕ error'}</span>
+                  <span class="font-mono">${t.name}</span>
+                </div>`).join('')}
+              ${(ar.creds||[]).map(c=>`
+                <div class="text-xs flex items-center gap-2">
+                  <span class="${c.status==='error'?'text-red-500':'text-emerald-600'}">${c.status==='saved'?'✓ saved':'✕ error'}</span>
+                  <span class="font-mono">${c.name}</span>
+                  <span class="text-slate-400">${c.target||''}</span>
+                </div>`).join('')}
+            </div>` : ''}
           </div>` : `
           <div class="text-sm text-slate-600 mb-6">
             Review your configuration, then ${isProd ? 'submit for approval' : 'activate the connector'}.
@@ -1214,10 +1298,19 @@
         const r = await fetch(`/api/connector-types/${wizardKey}/activate`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ notes: null }),
+          body: JSON.stringify({
+            notes:  null,
+            creds:  wizardData.creds  || null,
+            topics: wizardData.topics || null,
+          }),
         });
         const result = await r.json().catch(() => ({ ok: false, detail: r.statusText }));
         if (!r.ok) { toastErr('Activation failed', result.detail || r.statusText); return; }
+        // Surface any per-item errors as warnings without blocking
+        const credErrors  = (result.creds  || []).filter(c => c.status === 'error');
+        const topicErrors = (result.topics || []).filter(t => t.status === 'error');
+        if (credErrors.length)  toastWarn('Some credentials failed to save', credErrors.map(c=>c.name).join(', '));
+        if (topicErrors.length) toastWarn('Some topics failed to create',    topicErrors.map(t=>t.name).join(', '));
         wizardData.activateResult = result;
         renderWizard();
       } catch (e) {
@@ -1489,6 +1582,50 @@
             <h3 class="text-sm font-semibold uppercase tracking-wide text-slate-500 mb-2">Credentials</h3>
             <div class="divide-y divide-slate-100">${relatedRows}</div>
           </div>
+          ${(intg.topics||[]).length ? `
+          <div class="bg-white border border-slate-200 rounded-lg p-5">
+            <h3 class="text-sm font-semibold uppercase tracking-wide text-slate-500 mb-3">Topics</h3>
+            <div class="space-y-2">
+              ${(intg.topics||[]).map(t => `
+                <div class="flex items-start gap-3 p-2 bg-slate-50 rounded">
+                  <span class="text-xs px-2 py-0.5 rounded mt-0.5 flex-shrink-0
+                    ${t.direction==='publish'
+                      ? 'bg-emerald-50 text-emerald-700 border border-emerald-200'
+                      : 'bg-blue-50 text-blue-700 border border-blue-200'}">
+                    ${t.direction==='publish'?'↑ pub':'↓ sub'}
+                  </span>
+                  <div>
+                    <div class="font-mono text-sm">${t.name}</div>
+                    <div class="text-xs text-slate-500 mt-0.5">${t.description||''}</div>
+                  </div>
+                </div>`).join('')}
+            </div>
+          </div>` : ''}
+          ${(intg.field_schema||[]).length ? `
+          <div class="bg-white border border-slate-200 rounded-lg p-5">
+            <h3 class="text-sm font-semibold uppercase tracking-wide text-slate-500 mb-3">Canonical schema</h3>
+            <table class="w-full text-xs">
+              <thead class="text-slate-400">
+                <tr><th class="text-left pb-1">Field</th><th class="text-left pb-1">Type</th><th class="text-left pb-1">Description</th></tr>
+              </thead>
+              <tbody class="divide-y divide-slate-100">
+                ${(intg.field_schema||[]).map(f=>`
+                  <tr>
+                    <td class="py-1.5 font-mono pr-4">${f.name}${f.required===false?' <span class="text-slate-400 text-xs">opt</span>':''}</td>
+                    <td class="py-1.5 text-slate-500 pr-4">${f.type}</td>
+                    <td class="py-1.5 text-slate-500">${f.description}</td>
+                  </tr>`).join('')}
+              </tbody>
+            </table>
+          </div>` : ''}
+          ${(intg.n8n_workflow_ids||[]).length ? `
+          <div class="bg-white border border-slate-200 rounded-lg p-5">
+            <h3 class="text-sm font-semibold uppercase tracking-wide text-slate-500 mb-2">n8n Workflows</h3>
+            <div class="flex flex-wrap gap-2">
+              ${(intg.n8n_workflow_ids||[]).map(w=>`
+                <span class="text-xs font-mono px-2 py-1 bg-violet-50 text-violet-700 border border-violet-200 rounded">${w}</span>`).join('')}
+            </div>
+          </div>` : ''}
         </section>
       `;
     }

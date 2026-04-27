@@ -550,8 +550,47 @@ def test_integration(
 import connector_store
 connector_store.init_schema()
 
-_KONG_PROXY_URL = os.getenv("KONG_PROXY_URL", "http://kong:8000")
-_KONG_TIMEOUT   = float(os.getenv("KONG_TEST_TIMEOUT", "10"))
+_KONG_PROXY_URL     = os.getenv("KONG_PROXY_URL",     "http://kong:8000")
+_KONG_TIMEOUT       = float(os.getenv("KONG_TEST_TIMEOUT", "10"))
+_REDPANDA_ADMIN_URL = os.getenv("REDPANDA_ADMIN_URL", "http://redpanda-0:9644")
+_REDPANDA_REPLICAS  = int(os.getenv("REDPANDA_DEFAULT_REPLICAS", "3"))
+
+
+def _ensure_topics(topics: list, actor: str) -> list[dict]:
+    """Create Redpanda topics that don't exist yet via the Admin API.
+
+    Non-fatal: returns a list of {name, status, detail} so callers can report
+    partial success without blocking connector activation.
+    """
+    import httpx
+    results = []
+    for t in topics:
+        try:
+            r = httpx.post(
+                f"{_REDPANDA_ADMIN_URL}/v1/topics",
+                json={
+                    "name":               t["name"],
+                    "partition_count":    3,
+                    "replication_factor": _REDPANDA_REPLICAS,
+                    "configs": [
+                        {"name": "retention.ms",
+                         "value": str(t.get("retention_ms", 604_800_000))},
+                        {"name": "compression.type", "value": "zstd"},
+                    ],
+                },
+                timeout=5,
+            )
+            if r.status_code in (200, 201):
+                results.append({"name": t["name"], "status": "created"})
+            elif r.status_code == 400 and "already exists" in r.text.lower():
+                results.append({"name": t["name"], "status": "exists"})
+            else:
+                results.append({"name": t["name"], "status": "error",
+                                 "detail": r.text[:200]})
+        except Exception as e:
+            results.append({"name": t["name"], "status": "error",
+                             "detail": str(e)[:200]})
+    return results
 
 
 def _serialize_integration(i) -> dict:
@@ -620,6 +659,8 @@ def get_connector_type(key: str, actor: str = Depends(_current_actor)) -> dict:
 
 class ActivateReq(BaseModel):
     notes: Optional[str] = None
+    creds: Optional[dict] = None   # {ENV_VAR_NAME: value} from wizard auth step
+    topics: Optional[dict] = None  # {original_name: override_name} from wizard topics step
 
 
 @app.post("/api/connector-types/{key}/activate", tags=["connectors"])
@@ -631,23 +672,74 @@ def activate_connector(
 ) -> dict:
     """Activate a connector.
 
-    dev:  immediate — connector moves to 'active' status.
-    prod: queued   — creates an approval record; status becomes 'pending_approval'.
+    Accepts credentials and topic overrides from the wizard. Saves creds to
+    .env / Kong, creates any missing Redpanda topics, then activates the
+    connector state (immediate in dev, queued in prod).
     """
     import integrations as reg
-    if reg.BY_KEY.get(key) is None:
+    intg = reg.BY_KEY.get(key)
+    if intg is None:
         raise HTTPException(status_code=404, detail=f"unknown connector '{key}'")
+
+    cred_results   = []
+    topic_results  = []
+
+    # ── save credentials ────────────────────────────────────────────────
+    if body.creds:
+        for ev in intg.env_vars:
+            value = body.creds.get(ev.name, "").strip()
+            if not value:
+                continue
+            # Route Kong-only creds to Kong consumer, everything else to .env
+            is_kong_only = ev.services == ["kong"] or (
+                intg.kong_consumer and
+                ("INBOUND_API_KEY" in ev.name or "WEBHOOK_SECRET" in ev.name)
+                and "kong" in ev.services
+            )
+            try:
+                if is_kong_only and intg.kong_consumer:
+                    set_kong_key(intg.kong_consumer, value)
+                    cred_results.append({"name": ev.name, "target": "kong", "status": "saved"})
+                else:
+                    set_env_credential(ev.name, value)
+                    audit.mark_restart_pending(ev.services)
+                    cred_results.append({"name": ev.name, "target": "env", "status": "saved"})
+                audit.record(
+                    action="create",
+                    source="kong" if is_kong_only else "env",
+                    name=ev.name,
+                    integration=intg.name,
+                    note="wizard activation",
+                    client_ip=_client_ip(req),
+                    actor=actor,
+                )
+            except Exception as e:
+                cred_results.append({"name": ev.name, "status": "error", "detail": str(e)[:200]})
+
+    # ── create topics ────────────────────────────────────────────────────
+    if intg.topics:
+        overrides = body.topics or {}
+        topics_to_create = [
+            {**{"name": overrides.get(t.name, t.name),
+                "direction": t.direction,
+                "retention_ms": t.retention_ms}}
+            for t in intg.topics
+        ]
+        topic_results = _ensure_topics(topics_to_create, actor)
+
+    # ── flip activation state ────────────────────────────────────────────
     result = connector_store.activate(key, actor)
     audit.record(
         action="activate",
         source="connector",
         name=key,
-        integration=key,
-        note=f"env={connector_store.GATEWAY_ENV} status={result['status']}",
+        integration=intg.name,
+        note=f"env={connector_store.GATEWAY_ENV} status={result['status']} "
+             f"creds={len(cred_results)} topics={len(topic_results)}",
         client_ip=_client_ip(req),
         actor=actor,
     )
-    return result
+    return {**result, "creds": cred_results, "topics": topic_results}
 
 
 class TestEventReq(BaseModel):
