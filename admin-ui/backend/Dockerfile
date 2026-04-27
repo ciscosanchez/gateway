@@ -11,6 +11,7 @@ COPY app.py .
 COPY audit.py .
 COPY healthchecks.py .
 COPY integrations.py .
+COPY connector_store.py .
 COPY services.py .
 COPY sources/ ./sources/
 

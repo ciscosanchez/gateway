@@ -90,6 +90,8 @@
       </div>
       <nav class="flex items-center gap-1">
         <a href="#dashboard"    class="nav-link px-3 py-1.5 rounded hover:bg-slate-100 text-sm">Dashboard</a>
+        <a href="#catalog"      class="nav-link px-3 py-1.5 rounded hover:bg-slate-100 text-sm">Catalog</a>
+        <a href="#topology"     class="nav-link px-3 py-1.5 rounded hover:bg-slate-100 text-sm">Topology</a>
         <a href="#credentials"  class="nav-link px-3 py-1.5 rounded hover:bg-slate-100 text-sm">Credentials</a>
         <a href="#integrations" class="nav-link px-3 py-1.5 rounded hover:bg-slate-100 text-sm">Integrations</a>
         <a href="#audit"        class="nav-link px-3 py-1.5 rounded hover:bg-slate-100 text-sm">Audit log</a>
@@ -201,6 +203,36 @@
     </section>
 
     <!-- ==================================================== -->
+    <!-- Connector Catalog                                     -->
+    <!-- ==================================================== -->
+    <section id="view-catalog" class="view">
+      <div class="flex items-center justify-between mb-1">
+        <h1 class="text-2xl font-semibold tracking-tight">Connector Catalog</h1>
+        <span id="catalog-env-badge" class="text-xs px-2 py-1 rounded bg-slate-100 text-slate-600"></span>
+      </div>
+      <p class="text-slate-500 mb-6">Every connector type available on this gateway. Click <strong>Connect</strong> to run the setup wizard.</p>
+      <div id="catalog-grid" class="grid grid-cols-3 gap-4"></div>
+    </section>
+
+    <!-- ==================================================== -->
+    <!-- Topology                                              -->
+    <!-- ==================================================== -->
+    <section id="view-topology" class="view">
+      <h1 class="text-2xl font-semibold tracking-tight mb-1">Data Flow Topology</h1>
+      <p class="text-slate-500 mb-6">How data moves through the gateway — sources publish to Redpanda topics, sinks subscribe.</p>
+      <div id="topology-graph" class="bg-white border border-slate-200 rounded-lg p-6 overflow-x-auto"></div>
+    </section>
+
+    <!-- ==================================================== -->
+    <!-- Approval Queue (prod only)                            -->
+    <!-- ==================================================== -->
+    <section id="view-approvals" class="view">
+      <h1 class="text-2xl font-semibold tracking-tight mb-1">Approval Queue</h1>
+      <p class="text-slate-500 mb-6">Connector activations waiting for review. Only relevant in production environments.</p>
+      <div id="approval-rows" class="bg-white border border-slate-200 rounded-lg divide-y divide-slate-200"></div>
+    </section>
+
+    <!-- ==================================================== -->
     <!-- Audit log (sketch)                                    -->
     <!-- ==================================================== -->
     <section id="view-audit" class="view">
@@ -210,6 +242,42 @@
     </section>
 
   </main>
+
+  <!-- ==================================================== -->
+  <!-- Connector wizard modal (6 steps)                      -->
+  <!-- ==================================================== -->
+  <div id="wizard-modal" class="fixed inset-0 bg-slate-900/50 z-50 hidden items-center justify-center p-6">
+    <div class="bg-white rounded-lg shadow-xl w-full max-w-2xl flex flex-col max-h-[90vh]">
+
+      <!-- header -->
+      <div class="px-6 py-4 border-b border-slate-200 flex items-center justify-between flex-shrink-0">
+        <div>
+          <div class="font-semibold" id="wizard-title">Connect</div>
+          <div class="text-xs text-slate-500 mt-0.5" id="wizard-subtitle"></div>
+        </div>
+        <button class="text-slate-400 hover:text-slate-700 text-xl leading-none" onclick="closeWizard()">✕</button>
+      </div>
+
+      <!-- step indicator -->
+      <div class="px-6 pt-4 flex-shrink-0">
+        <div class="flex items-center gap-2" id="wizard-steps">
+          <!-- rendered by renderWizardSteps() -->
+        </div>
+      </div>
+
+      <!-- step body -->
+      <div class="px-6 py-4 overflow-y-auto flex-1" id="wizard-body"></div>
+
+      <!-- footer -->
+      <div class="px-6 py-4 border-t border-slate-200 flex items-center justify-between flex-shrink-0">
+        <button id="wizard-back"  class="px-4 py-2 text-sm border border-slate-300 rounded hover:bg-slate-50" onclick="wizardBack()">Back</button>
+        <div class="flex gap-2">
+          <button class="px-4 py-2 text-sm border border-slate-300 rounded hover:bg-slate-50" onclick="closeWizard()">Cancel</button>
+          <button id="wizard-next"  class="px-4 py-2 text-sm bg-blue-600 hover:bg-blue-700 text-white rounded" onclick="wizardNext()">Next</button>
+        </div>
+      </div>
+    </div>
+  </div>
 
   <!-- ==================================================== -->
   <!-- Add/edit credential modal                             -->
@@ -335,7 +403,7 @@
         const enabledSources = Object.entries(sourcesState).filter(([,v]) => v.enabled).map(([k]) => k);
         const writables = Object.entries(sourcesState).filter(([,v]) => v.writable).map(([k]) => k);
         // Fetch structure first, then credentials — renderDashboard needs both.
-        await refreshIntegrations();
+        await Promise.all([refreshIntegrations(), refreshConnectorTypes()]);
         await refreshCreds();
         await refreshAudit();
         await refreshPending();
@@ -347,10 +415,12 @@
           `<strong>Live.</strong> Backend phase ${h.phase || '?'} — ${enabledSources.length} source(s): ${enabledSources.join(', ')}. ` +
           `Writes: ${writables.join(', ') || '<em>read-only</em>'}.${restartNote}`;
         renderDashboard();
+        renderCatalog();
         onHash();
       } catch (e) {
         console.info('admin backend unreachable, using mock:', e);
-        renderDashboard();   // render with mock data so the page isn't empty
+        renderDashboard();
+        renderCatalog();
       }
     }
 
@@ -602,6 +672,21 @@
     ];
     let integrations = MOCK_INTEGRATIONS.slice();
 
+    // ── connector catalog data ───────────────────────────────────────────
+    let connectorTypes = [];   // populated from /api/connector-types
+    let gatewayEnv = 'dev';
+
+    async function refreshConnectorTypes() {
+      try {
+        const r = await fetch('/api/connector-types');
+        if (r.ok) {
+          const d = await r.json();
+          connectorTypes = d.connector_types || [];
+          gatewayEnv     = d.env || 'dev';
+        }
+      } catch (_) { /* keep empty — catalog renders what's in integrations array */ }
+    }
+
     // ── integration helpers ──────────────────────────────────────────────
     const STATUS_CLASS = { healthy:'status-healthy', degraded:'status-degraded', down:'status-down', unknown:'status-unknown' };
 
@@ -661,6 +746,536 @@
             <div class="text-sm mt-1">Add integration</div>
           </div>
         </div>`;
+    }
+
+    // ── catalog ──────────────────────────────────────────────────────────
+    const STATUS_LABELS = {
+      active:            { text:'Active',           cls:'text-emerald-700 bg-emerald-50' },
+      pending_approval:  { text:'Pending approval', cls:'text-amber-700   bg-amber-50'   },
+      approved:          { text:'Approved',         cls:'text-blue-700    bg-blue-50'    },
+      disabled:          { text:'Disabled',         cls:'text-slate-500   bg-slate-100'  },
+      draft:             { text:'Not connected',    cls:'text-slate-500   bg-slate-100'  },
+    };
+
+    function renderCatalog() {
+      const badge = document.getElementById('catalog-env-badge');
+      if (badge) badge.textContent = `env: ${gatewayEnv}`;
+
+      // Merge live connector types with mock integrations as fallback
+      const source = connectorTypes.length ? connectorTypes
+        : integrations.map(i => ({ ...i, status: 'draft' }));
+
+      const grid = document.getElementById('catalog-grid');
+      if (!grid) return;
+      grid.innerHTML = source.map(ct => {
+        const sl = STATUS_LABELS[ct.status] || STATUS_LABELS.draft;
+        const isActive = ct.status === 'active';
+        const authBadge = ct.description
+          ? `<span class="text-xs px-2 py-0.5 rounded bg-slate-100 text-slate-600">${ct.description}</span>`
+          : '';
+        const topicCount = (ct.topics || []).length;
+        const fieldCount = (ct.field_schema || []).length;
+        return `
+          <div class="bg-white border border-slate-200 rounded-lg p-5 flex flex-col gap-3">
+            <div class="flex items-start justify-between gap-2">
+              <div>
+                <div class="font-semibold text-base">${ct.label || ct.name}</div>
+                <div class="flex flex-wrap gap-1 mt-1">${authBadge}</div>
+              </div>
+              <span class="text-xs px-2 py-0.5 rounded flex-shrink-0 ${sl.cls}">${sl.text}</span>
+            </div>
+            <p class="text-sm text-slate-600 leading-relaxed">${ct.notes || '—'}</p>
+            <div class="flex gap-3 text-xs text-slate-500">
+              <span>${topicCount} topic${topicCount !== 1 ? 's' : ''}</span>
+              <span>${fieldCount} schema field${fieldCount !== 1 ? 's' : ''}</span>
+              <span>${(ct.n8n_workflow_ids || []).length} workflow${(ct.n8n_workflow_ids||[]).length!==1?'s':''}</span>
+            </div>
+            <div class="flex gap-2 pt-1 border-t border-slate-100 mt-auto">
+              <button class="flex-1 px-3 py-1.5 text-sm border border-slate-300 rounded hover:bg-slate-50"
+                      onclick="goto('integrations','${ct.key}')">Details</button>
+              ${isActive
+                ? `<button class="flex-1 px-3 py-1.5 text-sm bg-emerald-50 text-emerald-700 border border-emerald-200 rounded cursor-default">Connected</button>`
+                : `<button class="flex-1 px-3 py-1.5 text-sm bg-blue-600 hover:bg-blue-700 text-white rounded"
+                           onclick="openWizard('${ct.key}')">Connect</button>`
+              }
+            </div>
+          </div>`;
+      }).join('');
+    }
+
+    // ── topology graph ───────────────────────────────────────────────────
+    let topoData = { nodes: [], edges: [] };
+
+    async function refreshTopology() {
+      try {
+        const r = await fetch('/api/topology');
+        if (r.ok) topoData = await r.json();
+      } catch (_) { /* keep empty */ }
+    }
+
+    function renderTopology() {
+      const el = document.getElementById('topology-graph');
+      if (!el) return;
+
+      const { nodes, edges } = topoData;
+      if (!nodes.length) {
+        el.innerHTML = '<div class="text-sm text-slate-400 italic">No topology data yet. Start the backend to load live data.</div>';
+        return;
+      }
+
+      // Build from mock integrations if backend isn't live
+      const connectors = nodes.filter(n => n.type === 'connector');
+      const topics     = nodes.filter(n => n.type === 'topic');
+
+      // Layout: sources (left) | topics (centre) | sinks (right)
+      const sources = connectors.filter(n => n.direction === 'source' || n.direction === 'bidirectional');
+      const sinks   = connectors.filter(n => n.direction === 'sink'   || n.direction === 'bidirectional');
+
+      const stCls = { active:'text-emerald-700 bg-emerald-50 border-emerald-200',
+                      draft:'text-slate-500 bg-slate-50 border-slate-200',
+                      pending_approval:'text-amber-700 bg-amber-50 border-amber-200',
+                      disabled:'text-slate-400 bg-slate-50 border-slate-200' };
+
+      const nodeCard = (n, align='') => {
+        const cls = stCls[n.status] || stCls.draft;
+        return `<div class="border rounded px-3 py-2 text-sm font-medium ${cls} ${align}" data-topo-id="${n.id}">${n.label || n.id}</div>`;
+      };
+      const topicPill = (t) =>
+        `<div class="border border-blue-200 bg-blue-50 text-blue-700 rounded-full px-3 py-1 text-xs font-mono" data-topo-id="${t.id}">${t.id}</div>`;
+
+      // Build edge lookup: topic → {pubs: [], subs: []}
+      const topicEdges = {};
+      edges.forEach(e => {
+        if (e.label === 'pub') {
+          (topicEdges[e.to]  = topicEdges[e.to]  || { pubs:[], subs:[] }).pubs.push(e.from);
+        } else {
+          (topicEdges[e.from] = topicEdges[e.from] || { pubs:[], subs:[] }).subs.push(e.to);
+        }
+      });
+
+      const html = `
+        <div class="flex gap-8 items-start min-w-max">
+          <div class="flex flex-col gap-3">
+            <div class="text-xs font-semibold uppercase tracking-wide text-slate-400 mb-1">Sources</div>
+            ${sources.map(n => nodeCard(n)).join('')}
+          </div>
+          <div class="flex flex-col gap-3 items-center">
+            <div class="text-xs font-semibold uppercase tracking-wide text-slate-400 mb-1 text-center">Topics (Redpanda)</div>
+            ${topics.map(t => {
+              const te = topicEdges[t.id] || { pubs:[], subs:[] };
+              return `<div class="flex items-center gap-2">
+                <div class="text-xs text-slate-400">${te.pubs.join(', ') || '—'}</div>
+                <span class="text-slate-300">→</span>
+                ${topicPill(t)}
+                <span class="text-slate-300">→</span>
+                <div class="text-xs text-slate-400">${te.subs.join(', ') || '—'}</div>
+              </div>`;
+            }).join('')}
+          </div>
+          <div class="flex flex-col gap-3">
+            <div class="text-xs font-semibold uppercase tracking-wide text-slate-400 mb-1">Sinks</div>
+            ${sinks.map(n => nodeCard(n)).join('')}
+          </div>
+        </div>`;
+      el.innerHTML = html;
+    }
+
+    // ── wizard ───────────────────────────────────────────────────────────
+    const WIZARD_STEPS = [
+      { id:'type',    label:'Select'    },
+      { id:'auth',    label:'Auth'      },
+      { id:'topics',  label:'Topics'    },
+      { id:'mapping', label:'Mapping'   },
+      { id:'test',    label:'Test'      },
+      { id:'activate',label:'Activate'  },
+    ];
+    let wizardStep = 0;
+    let wizardKey  = null;   // connector key being configured
+    let wizardData = {};     // accumulated answers per step
+    let wizardCT   = null;   // connector type object from catalog
+
+    function openWizard(key) {
+      wizardStep = key ? 1 : 0;   // if key given, skip step 0 (type selection)
+      wizardKey  = key || null;
+      wizardData = {};
+      wizardCT   = key ? (connectorTypes.find(ct => ct.key === key)
+                       || integrations.find(i  => i.key  === key)) : null;
+      document.getElementById('wizard-modal').style.display = 'flex';
+      renderWizard();
+    }
+
+    function closeWizard() {
+      document.getElementById('wizard-modal').style.display = 'none';
+      wizardKey = null; wizardCT = null; wizardData = {};
+    }
+
+    function renderWizardSteps() {
+      const start = wizardKey ? 1 : 0;
+      document.getElementById('wizard-steps').innerHTML = WIZARD_STEPS.map((s, i) => {
+        if (i < start) return '';
+        const done    = i <  wizardStep;
+        const current = i === wizardStep;
+        return `<div class="flex items-center gap-1">
+          ${i > start ? '<div class="h-px w-6 bg-slate-200 flex-shrink-0"></div>' : ''}
+          <div class="flex items-center gap-1.5">
+            <div class="w-5 h-5 rounded-full text-xs grid place-items-center flex-shrink-0
+              ${done    ? 'bg-emerald-500 text-white'
+              : current ? 'bg-blue-600 text-white'
+              :           'bg-slate-200 text-slate-500'}">
+              ${done ? '✓' : i - start + 1}
+            </div>
+            <span class="text-xs ${current ? 'font-semibold' : 'text-slate-500'}">${s.label}</span>
+          </div>
+        </div>`;
+      }).join('');
+    }
+
+    function renderWizard() {
+      const ct = wizardCT;
+      document.getElementById('wizard-title').textContent =
+        ct ? `Connect — ${ct.label || ct.name}` : 'Add Connection';
+      document.getElementById('wizard-subtitle').textContent =
+        WIZARD_STEPS[wizardStep] ? `Step ${wizardStep + 1} of ${WIZARD_STEPS.length}: ${WIZARD_STEPS[wizardStep].label}` : '';
+      document.getElementById('wizard-back').style.visibility =
+        wizardStep > (wizardKey ? 1 : 0) ? 'visible' : 'hidden';
+      renderWizardSteps();
+
+      const body = document.getElementById('wizard-body');
+      const step = WIZARD_STEPS[wizardStep]?.id;
+
+      if (step === 'type') {
+        const source = connectorTypes.length ? connectorTypes : integrations.map(i=>({...i,status:'draft'}));
+        body.innerHTML = `
+          <div class="text-sm text-slate-600 mb-4">Choose a connector type to set up.</div>
+          <div class="grid grid-cols-2 gap-3">
+            ${source.map(ct => `
+              <button onclick="wizardSelectType('${ct.key}')"
+                class="text-left border-2 rounded-lg p-3 hover:border-blue-400 transition-colors
+                  ${wizardData.selectedKey === ct.key ? 'border-blue-500 bg-blue-50' : 'border-slate-200'}">
+                <div class="font-medium text-sm">${ct.label || ct.name}</div>
+                <div class="text-xs text-slate-500 mt-0.5">${ct.description || ''}</div>
+              </button>`).join('')}
+          </div>`;
+      }
+
+      else if (step === 'auth') {
+        const envVars = (ct?.env_vars || []).filter(ev => ev.kind === 'secret' || ev.kind === 'identifier');
+        body.innerHTML = `
+          <div class="text-sm text-slate-600 mb-4">
+            Enter credentials for <strong>${ct?.label || ct?.name || 'this connector'}</strong>.
+            These are stored securely and never echoed back.
+          </div>
+          <div class="space-y-3">
+            ${envVars.map(ev => `
+              <div>
+                <label class="text-xs text-slate-500 uppercase tracking-wide">${ev.name}</label>
+                <input type="${ev.kind === 'secret' ? 'password' : 'text'}"
+                       data-wizard-field="${ev.name}"
+                       value="${wizardData.creds?.[ev.name] || ''}"
+                       class="mt-1 w-full border border-slate-300 rounded px-3 py-2 text-sm font-mono"
+                       placeholder="${ev.kind === 'secret' ? '••••••••' : ev.name.toLowerCase()}" />
+              </div>`).join('')}
+            ${envVars.length === 0 ? '<div class="text-sm text-slate-400 italic">No credentials required for this connector type.</div>' : ''}
+          </div>`;
+      }
+
+      else if (step === 'topics') {
+        const topics = ct?.topics || [];
+        body.innerHTML = `
+          <div class="text-sm text-slate-600 mb-4">
+            Redpanda topics for this connector. Names can be customised — defaults are pre-filled.
+          </div>
+          <div class="space-y-3">
+            ${topics.map(t => `
+              <div class="flex items-start gap-3 p-3 bg-slate-50 rounded border border-slate-200">
+                <div class="flex-1">
+                  <div class="flex items-center gap-2 mb-1">
+                    <span class="text-xs px-2 py-0.5 rounded
+                      ${t.direction==='publish'
+                        ? 'bg-emerald-50 text-emerald-700 border border-emerald-200'
+                        : 'bg-blue-50 text-blue-700 border border-blue-200'}">
+                      ${t.direction === 'publish' ? '↑ publish' : '↓ subscribe'}
+                    </span>
+                  </div>
+                  <input type="text" data-wizard-topic="${t.name}"
+                         value="${wizardData.topics?.[t.name] || t.name}"
+                         class="w-full border border-slate-300 rounded px-3 py-1.5 text-sm font-mono" />
+                  <div class="text-xs text-slate-500 mt-1">${t.description}</div>
+                </div>
+              </div>`).join('')}
+            ${topics.length === 0 ? '<div class="text-sm text-slate-400 italic">No topics defined for this connector type yet.</div>' : ''}
+          </div>`;
+      }
+
+      else if (step === 'mapping') {
+        const mappings  = ct?.transformations || [];
+        const schema    = ct?.field_schema    || [];
+        body.innerHTML = `
+          <div class="text-sm text-slate-600 mb-4">
+            Field-level transformation rules from the raw source payload to the canonical schema.
+            These are fixed per connector type — update <code>integrations.py</code> to change them.
+          </div>
+          ${schema.length ? `
+          <div class="mb-4">
+            <div class="text-xs font-semibold uppercase tracking-wide text-slate-500 mb-2">Canonical schema</div>
+            <div class="border border-slate-200 rounded overflow-hidden">
+              <table class="w-full text-xs">
+                <thead class="bg-slate-50 text-slate-500">
+                  <tr><th class="px-3 py-2 text-left">Field</th><th class="px-3 py-2 text-left">Type</th><th class="px-3 py-2 text-left">Description</th></tr>
+                </thead>
+                <tbody class="divide-y divide-slate-100">
+                  ${schema.map(f => `
+                    <tr>
+                      <td class="px-3 py-2 font-mono">${f.name}${f.required ? '' : ' <span class="text-slate-400">opt</span>'}</td>
+                      <td class="px-3 py-2 text-slate-500">${f.type}</td>
+                      <td class="px-3 py-2 text-slate-500">${f.description}</td>
+                    </tr>`).join('')}
+                </tbody>
+              </table>
+            </div>
+          </div>` : ''}
+          ${mappings.length ? `
+          <div>
+            <div class="text-xs font-semibold uppercase tracking-wide text-slate-500 mb-2">Transformations</div>
+            <div class="border border-slate-200 rounded overflow-hidden">
+              <table class="w-full text-xs">
+                <thead class="bg-slate-50 text-slate-500">
+                  <tr><th class="px-3 py-2 text-left">Source field</th><th class="px-3 py-2 text-left">→ Target</th><th class="px-3 py-2 text-left">Transform</th></tr>
+                </thead>
+                <tbody class="divide-y divide-slate-100">
+                  ${mappings.map(m => `
+                    <tr class="${m.transform==='redact'?'bg-amber-50':''}">
+                      <td class="px-3 py-2 font-mono text-slate-600">${m.source}</td>
+                      <td class="px-3 py-2 font-mono">${m.target}</td>
+                      <td class="px-3 py-2">
+                        <span class="px-1.5 py-0.5 rounded text-xs
+                          ${m.transform==='redact' ? 'bg-amber-100 text-amber-700'
+                          : m.transform==='drop'   ? 'bg-red-50 text-red-600'
+                          :                          'bg-slate-100 text-slate-600'}">
+                          ${m.transform}
+                        </span>
+                        ${m.note ? `<span class="text-slate-400 ml-1">${m.note}</span>` : ''}
+                      </td>
+                    </tr>`).join('')}
+                </tbody>
+              </table>
+            </div>
+          </div>` : '<div class="text-sm text-slate-400 italic">No transformations defined yet for this connector.</div>'}`;
+      }
+
+      else if (step === 'test') {
+        const existing = wizardData.testResult;
+        body.innerHTML = `
+          <div class="text-sm text-slate-600 mb-4">
+            Fire a synthetic test event through Kong to verify the connection end-to-end.
+            The payload is generated from the canonical schema.
+          </div>
+          <div id="wizard-test-area">
+            ${existing ? renderTestResult(existing) : `
+            <button id="wizard-fire-btn"
+                    class="w-full px-4 py-3 bg-blue-600 hover:bg-blue-700 text-white rounded text-sm font-medium"
+                    onclick="wizardFireTest()">
+              Fire test event →
+            </button>`}
+          </div>`;
+      }
+
+      else if (step === 'activate') {
+        const env = gatewayEnv;
+        const isProd = env === 'prod';
+        const ar = wizardData.activateResult;
+        body.innerHTML = ar ? `
+          <div class="text-center py-6">
+            ${ar.status === 'active'
+              ? `<div class="text-4xl mb-3">✓</div>
+                 <div class="text-lg font-semibold text-emerald-700">Connector activated</div>
+                 <div class="text-sm text-slate-500 mt-1">${ct?.label || ct?.name} is now live on the gateway.</div>`
+              : `<div class="text-4xl mb-3">⏳</div>
+                 <div class="text-lg font-semibold text-amber-700">Pending approval</div>
+                 <div class="text-sm text-slate-500 mt-1">Approval ID: <code>${ar.approval_id}</code></div>
+                 <div class="text-sm text-slate-500 mt-1">A team member must approve this before the connector goes live.</div>`}
+          </div>` : `
+          <div class="text-sm text-slate-600 mb-6">
+            Review your configuration, then ${isProd ? 'submit for approval' : 'activate the connector'}.
+          </div>
+          <div class="space-y-3 mb-6">
+            <div class="flex justify-between py-2 border-b border-slate-100 text-sm">
+              <span class="text-slate-500">Connector</span>
+              <span class="font-medium">${ct?.label || ct?.name}</span>
+            </div>
+            <div class="flex justify-between py-2 border-b border-slate-100 text-sm">
+              <span class="text-slate-500">Topics</span>
+              <span class="font-mono text-xs">${Object.values(wizardData.topics || {}).join(', ') || (ct?.topics||[]).map(t=>t.name).join(', ') || '—'}</span>
+            </div>
+            <div class="flex justify-between py-2 border-b border-slate-100 text-sm">
+              <span class="text-slate-500">Environment</span>
+              <span class="font-medium uppercase text-xs px-2 py-0.5 rounded
+                ${isProd ? 'bg-amber-50 text-amber-700' : 'bg-blue-50 text-blue-700'}">${env}</span>
+            </div>
+            <div class="flex justify-between py-2 text-sm">
+              <span class="text-slate-500">Activation</span>
+              <span>${isProd ? 'Requires approval' : 'Immediate'}</span>
+            </div>
+          </div>
+          <button class="w-full px-4 py-3 ${isProd ? 'bg-amber-600 hover:bg-amber-700' : 'bg-emerald-600 hover:bg-emerald-700'} text-white rounded text-sm font-medium"
+                  onclick="wizardActivate()">
+            ${isProd ? 'Submit for approval' : 'Activate connector'}
+          </button>`;
+
+        // Override "Next" button label on final step
+        document.getElementById('wizard-next').textContent = 'Done';
+        document.getElementById('wizard-next').onclick = () => { closeWizard(); renderCatalog(); renderDashboard(); };
+      }
+    }
+
+    function wizardSelectType(key) {
+      wizardData.selectedKey = key;
+      wizardKey = key;
+      wizardCT = connectorTypes.find(ct => ct.key === key)
+               || integrations.find(i  => i.key  === key);
+      // Re-render step to update selection highlight
+      renderWizard();
+    }
+
+    function wizardCollectStep() {
+      const step = WIZARD_STEPS[wizardStep]?.id;
+      if (step === 'auth') {
+        const creds = {};
+        document.querySelectorAll('[data-wizard-field]').forEach(el => {
+          creds[el.dataset.wizardField] = el.value;
+        });
+        wizardData.creds = creds;
+      }
+      if (step === 'topics') {
+        const topics = {};
+        document.querySelectorAll('[data-wizard-topic]').forEach(el => {
+          topics[el.dataset.wizardTopic] = el.value;
+        });
+        wizardData.topics = topics;
+      }
+    }
+
+    function wizardNext() {
+      if (WIZARD_STEPS[wizardStep]?.id === 'activate' && wizardData.activateResult) {
+        closeWizard(); renderCatalog(); renderDashboard(); return;
+      }
+      wizardCollectStep();
+      if (wizardStep === 0 && !wizardKey) {
+        toastWarn('Select a connector type first'); return;
+      }
+      if (wizardStep < WIZARD_STEPS.length - 1) {
+        wizardStep++;
+        document.getElementById('wizard-next').textContent = 'Next';
+        document.getElementById('wizard-next').onclick = wizardNext;
+        renderWizard();
+      }
+    }
+
+    function wizardBack() {
+      wizardCollectStep();
+      const minStep = wizardKey && WIZARD_STEPS[0].id === 'type' ? 1 : 0;
+      if (wizardStep > minStep) { wizardStep--; renderWizard(); }
+    }
+
+    async function wizardFireTest() {
+      const btn = document.getElementById('wizard-fire-btn');
+      if (btn) { btn.disabled = true; btn.textContent = 'Firing…'; }
+      try {
+        const r = await fetch(`/api/connector-types/${wizardKey}/test-event`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ payload: null }),
+        });
+        const result = await r.json().catch(() => ({ ok: false, detail: r.statusText }));
+        wizardData.testResult = result;
+        document.getElementById('wizard-test-area').innerHTML = renderTestResult(result);
+      } catch (e) {
+        wizardData.testResult = { ok: false, detail: String(e.message || e), latency_ms: 0 };
+        document.getElementById('wizard-test-area').innerHTML = renderTestResult(wizardData.testResult);
+      }
+    }
+
+    function renderTestResult(r) {
+      return `
+        <div class="rounded-lg border p-4 ${r.ok ? 'border-emerald-200 bg-emerald-50' : 'border-red-200 bg-red-50'}">
+          <div class="flex items-center gap-2 mb-2">
+            <span class="text-lg">${r.ok ? '✓' : '✕'}</span>
+            <span class="font-medium text-sm ${r.ok ? 'text-emerald-700' : 'text-red-700'}">${r.ok ? 'Test passed' : 'Test failed'}</span>
+            <span class="text-xs text-slate-500 ml-auto">${r.latency_ms || 0}ms</span>
+          </div>
+          <div class="text-xs text-slate-600 font-mono">${r.detail || ''}</div>
+          ${r.correlation_id ? `<div class="text-xs text-slate-500 mt-2">Correlation ID: <code>${r.correlation_id}</code> — search Loki to trace this event.</div>` : ''}
+          ${!r.ok ? `<button class="mt-3 text-xs text-blue-600 underline" onclick="wizardFireTest()">Retry</button>` : ''}
+        </div>`;
+    }
+
+    async function wizardActivate() {
+      try {
+        const r = await fetch(`/api/connector-types/${wizardKey}/activate`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ notes: null }),
+        });
+        const result = await r.json().catch(() => ({ ok: false, detail: r.statusText }));
+        if (!r.ok) { toastErr('Activation failed', result.detail || r.statusText); return; }
+        wizardData.activateResult = result;
+        renderWizard();
+      } catch (e) {
+        toastErr('Activation failed', String(e.message || e));
+      }
+    }
+
+    // ── approvals ────────────────────────────────────────────────────────
+    async function refreshApprovals() {
+      try {
+        const r = await fetch('/api/approvals');
+        if (!r.ok) return;
+        const d = await r.json();
+        renderApprovals(d.items || []);
+      } catch (_) {}
+    }
+
+    function renderApprovals(rows) {
+      const el = document.getElementById('approval-rows');
+      if (!el) return;
+      if (!rows.length) {
+        el.innerHTML = '<div class="p-4 text-sm text-slate-500">No pending approvals.</div>';
+        return;
+      }
+      el.innerHTML = rows.map(a => `
+        <div class="p-4 flex items-start gap-4">
+          <div class="flex-1">
+            <div class="font-medium text-sm">${a.connector_key}</div>
+            <div class="text-xs text-slate-500 mt-0.5">Requested by <strong>${a.requested_by}</strong> at ${(a.requested_at||'').slice(0,16).replace('T',' ')}</div>
+          </div>
+          <div class="flex gap-2">
+            <button class="px-3 py-1.5 text-xs bg-emerald-600 hover:bg-emerald-700 text-white rounded"
+                    onclick="approvalDecide('${a.id}','approve')">Approve</button>
+            <button class="px-3 py-1.5 text-xs bg-red-600 hover:bg-red-700 text-white rounded"
+                    onclick="approvalDecide('${a.id}','reject')">Reject</button>
+          </div>
+        </div>`).join('');
+    }
+
+    async function approvalDecide(id, decision) {
+      const reason = decision === 'reject'
+        ? prompt('Reason for rejection (optional):') ?? ''
+        : '';
+      try {
+        const r = await fetch(`/api/approvals/${id}/${decision}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ reason }),
+        });
+        const b = await r.json().catch(() => ({}));
+        if (!r.ok) { toastErr(`${decision} failed`, b.detail || r.statusText); return; }
+        toastOk(`Connector ${decision}d`);
+        await refreshApprovals();
+        await refreshConnectorTypes();
+        renderCatalog();
+      } catch (e) {
+        toastErr(`${decision} failed`, String(e.message || e));
+      }
     }
 
     // --- toasts -------------------------------------------------------
@@ -740,8 +1355,11 @@
       const el = document.getElementById('view-' + viewId);
       if (el) el.classList.add('active');
       if (viewId === 'dashboard')    renderDashboard();
+      if (viewId === 'catalog')      renderCatalog();
+      if (viewId === 'topology')     { refreshTopology().then(renderTopology); }
       if (viewId === 'credentials')  renderCreds('all');
       if (viewId === 'integrations') renderIntegration(detailKey || integrations[0]?.key || 'samsara');
+      if (viewId === 'approvals')    refreshApprovals();
       if (viewId === 'audit')        renderAudit();
     }
 
@@ -927,7 +1545,8 @@
     });
 
     // --- init ---------------------------------------------------------
-    renderDashboard();  // show mock cards immediately; initBackend will refresh with live data
+    renderDashboard();   // show mock cards immediately; initBackend will refresh with live data
+    renderCatalog();
     onHash();
     initBackend();
   </script>

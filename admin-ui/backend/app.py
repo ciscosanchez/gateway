@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import os
 import secrets
+import uuid
 from pathlib import Path
 from typing import Optional
 
@@ -540,6 +541,314 @@ def test_integration(
         actor=actor,
     )
     return {"name": name, **result}
+
+
+# ---------------------------------------------------------------------------
+# Connector platform  (catalog · activate · test-event · topology · approvals)
+# ---------------------------------------------------------------------------
+
+import connector_store
+connector_store.init_schema()
+
+_KONG_PROXY_URL = os.getenv("KONG_PROXY_URL", "http://kong:8000")
+_KONG_TIMEOUT   = float(os.getenv("KONG_TEST_TIMEOUT", "10"))
+
+
+def _serialize_integration(i) -> dict:
+    """Full connector-type representation for the catalog and wizard."""
+    import integrations as reg
+    return {
+        "key":             i.key or i.name.lower().replace(" ", "-"),
+        "name":            i.name,
+        "label":           i.label or i.name,
+        "description":     i.description,
+        "notes":           i.notes,
+        "env_vars":        [
+            {"name": ev.name, "kind": ev.kind, "services": ev.services}
+            for ev in i.env_vars
+        ],
+        "kong_consumer":   i.kong_consumer,
+        "has_probe":       i.name in healthchecks.PROBES,
+        "topics":          [
+            {"name": t.name, "direction": t.direction,
+             "description": t.description, "retention_ms": t.retention_ms}
+            for t in i.topics
+        ],
+        "field_schema":    [
+            {"name": f.name, "type": f.type,
+             "description": f.description, "required": f.required}
+            for f in i.field_schema
+        ],
+        "transformations": [
+            {"source": m.source, "target": m.target,
+             "transform": m.transform, "note": m.note}
+            for m in i.transformations
+        ],
+        "n8n_workflow_ids": i.n8n_workflow_ids,
+    }
+
+
+@app.get("/api/connector-types", tags=["connectors"])
+def list_connector_types(actor: str = Depends(_current_actor)) -> dict:
+    """Catalog of all connector types with full structural detail."""
+    import integrations as reg
+    states = {s["key"]: s for s in connector_store.list_states()}
+    result = []
+    for i in reg.INTEGRATIONS:
+        if i.hidden:
+            continue
+        key = i.key or i.name.lower().replace(" ", "-")
+        serialized = _serialize_integration(i)
+        serialized["status"] = states.get(key, {}).get("status", "draft")
+        result.append(serialized)
+    return {"connector_types": result, "env": connector_store.GATEWAY_ENV}
+
+
+@app.get("/api/connector-types/{key}", tags=["connectors"])
+def get_connector_type(key: str, actor: str = Depends(_current_actor)) -> dict:
+    import integrations as reg
+    intg = reg.BY_KEY.get(key)
+    if intg is None or intg.hidden:
+        raise HTTPException(status_code=404, detail=f"connector type '{key}' not found")
+    state = connector_store.get_state(key) or {}
+    serialized = _serialize_integration(intg)
+    serialized["status"] = state.get("status", "draft")
+    serialized["activated_at"] = state.get("activated_at")
+    serialized["activated_by"] = state.get("activated_by")
+    return serialized
+
+
+class ActivateReq(BaseModel):
+    notes: Optional[str] = None
+
+
+@app.post("/api/connector-types/{key}/activate", tags=["connectors"])
+def activate_connector(
+    key: str,
+    body: ActivateReq,
+    req: Request,
+    actor: str = Depends(_current_actor),
+) -> dict:
+    """Activate a connector.
+
+    dev:  immediate — connector moves to 'active' status.
+    prod: queued   — creates an approval record; status becomes 'pending_approval'.
+    """
+    import integrations as reg
+    if reg.BY_KEY.get(key) is None:
+        raise HTTPException(status_code=404, detail=f"unknown connector '{key}'")
+    result = connector_store.activate(key, actor)
+    audit.record(
+        action="activate",
+        source="connector",
+        name=key,
+        integration=key,
+        note=f"env={connector_store.GATEWAY_ENV} status={result['status']}",
+        client_ip=_client_ip(req),
+        actor=actor,
+    )
+    return result
+
+
+class TestEventReq(BaseModel):
+    payload: Optional[dict] = None   # if None, backend generates a synthetic sample
+
+
+@app.post("/api/connector-types/{key}/test-event", tags=["connectors"])
+def test_event(
+    key: str,
+    body: TestEventReq,
+    req: Request,
+    actor: str = Depends(_current_actor),
+) -> dict:
+    """Fire a test event through Kong for this connector and report the result.
+
+    Generates a synthetic payload from the connector's field_schema if none is
+    provided. Posts to {KONG_PROXY_URL}/{key} with the connector's inbound API
+    key from .env. Returns HTTP status, latency, and correlation_id.
+    """
+    import integrations as reg
+    import time, json
+
+    intg = reg.BY_KEY.get(key)
+    if intg is None or intg.hidden:
+        raise HTTPException(status_code=404, detail=f"unknown connector '{key}'")
+
+    # Build synthetic payload from field_schema if caller didn't provide one
+    payload = body.payload
+    if payload is None:
+        payload = {}
+        for f in intg.field_schema:
+            if f.type == "string":
+                payload[f.name] = f"test_{f.name}"
+            elif f.type == "number":
+                payload[f.name] = 0
+            elif f.type == "boolean":
+                payload[f.name] = False
+            elif f.type in ("object", "array"):
+                payload[f.name] = {} if f.type == "object" else []
+        payload["_test"] = True
+
+    # Resolve the inbound API key from env
+    api_key_env = next(
+        (ev.name for ev in intg.env_vars if "INBOUND_API_KEY" in ev.name or
+         (ev.kind == "secret" and "API_KEY" in ev.name and ev.services == ["kong"])),
+        None,
+    )
+    api_key = os.getenv(api_key_env, "") if api_key_env else ""
+
+    import httpx
+    url = f"{_KONG_PROXY_URL}/{key}"
+    correlation_id = f"test-{uuid.uuid4().hex[:8]}"
+    headers = {
+        "Content-Type": "application/json",
+        "X-Correlation-Id": correlation_id,
+    }
+    if api_key:
+        headers["X-API-Key"] = api_key
+
+    t0 = time.monotonic()
+    try:
+        r = httpx.post(
+            url, json=payload, headers=headers,
+            timeout=_KONG_TIMEOUT,
+        )
+        latency_ms = round((time.monotonic() - t0) * 1000)
+        ok = r.status_code < 400
+        detail = f"HTTP {r.status_code}"
+        if not ok:
+            detail += f": {r.text[:200]}"
+    except httpx.TimeoutException:
+        latency_ms = round(_KONG_TEST_TIMEOUT * 1000)
+        ok, detail = False, "timeout waiting for Kong"
+    except Exception as e:
+        latency_ms = round((time.monotonic() - t0) * 1000)
+        ok, detail = False, str(e)[:200]
+
+    audit.record(
+        action="test_event",
+        source="connector",
+        name=key,
+        integration=key,
+        note=f"ok={ok} {detail} latency={latency_ms}ms correlation={correlation_id}",
+        client_ip=_client_ip(req),
+        actor=actor,
+    )
+    return {
+        "ok":             ok,
+        "latency_ms":     latency_ms,
+        "detail":         detail,
+        "correlation_id": correlation_id,
+        "payload_sent":   payload,
+        "url":            url,
+    }
+
+
+@app.get("/api/topology", tags=["connectors"])
+def get_topology(actor: str = Depends(_current_actor)) -> dict:
+    """Return the data-flow topology: sources → topics → sinks.
+
+    Used by the frontend topology graph. Each node is either a connector
+    (source or sink) or a Redpanda topic. Edges represent publish/subscribe
+    relationships.
+    """
+    import integrations as reg
+    states = {s["key"]: s["status"] for s in connector_store.list_states()}
+
+    nodes: list[dict] = []
+    edges: list[dict] = []
+    topic_set: set[str] = set()
+
+    for intg in reg.INTEGRATIONS:
+        if intg.hidden or not intg.topics:
+            continue
+        key = intg.key or intg.name.lower()
+        label = intg.label or intg.name
+        status = states.get(key, "draft")
+
+        has_pub = any(t.direction == "publish" for t in intg.topics)
+        has_sub = any(t.direction == "subscribe" for t in intg.topics)
+        direction = (
+            "bidirectional" if has_pub and has_sub
+            else "source" if has_pub
+            else "sink"
+        )
+        nodes.append({
+            "id":        key,
+            "label":     label,
+            "type":      "connector",
+            "direction": direction,
+            "status":    status,
+        })
+
+        for t in intg.topics:
+            if t.name not in topic_set:
+                topic_set.add(t.name)
+                nodes.append({
+                    "id":    t.name,
+                    "label": t.name,
+                    "type":  "topic",
+                })
+            if t.direction == "publish":
+                edges.append({"from": key, "to": t.name, "label": "pub"})
+            else:
+                edges.append({"from": t.name, "to": key, "label": "sub"})
+
+    return {"nodes": nodes, "edges": edges}
+
+
+# ── Approval queue (prod) ────────────────────────────────────────────────────
+
+@app.get("/api/approvals", tags=["connectors"])
+def list_approvals(actor: str = Depends(_current_actor)) -> dict:
+    rows = connector_store.list_pending_approvals()
+    return {"items": rows, "count": len(rows), "env": connector_store.GATEWAY_ENV}
+
+
+class ApprovalDecisionReq(BaseModel):
+    reason: Optional[str] = None
+
+
+@app.post("/api/approvals/{approval_id}/approve", tags=["connectors"])
+def approve_connector(
+    approval_id: str,
+    body: ApprovalDecisionReq,
+    req: Request,
+    actor: str = Depends(_current_actor),
+) -> dict:
+    result = connector_store.approve(approval_id, actor)
+    if not result.get("ok"):
+        raise HTTPException(status_code=400, detail=result.get("detail"))
+    audit.record(
+        action="approve",
+        source="connector",
+        name=approval_id,
+        note=body.reason or "",
+        client_ip=_client_ip(req),
+        actor=actor,
+    )
+    return result
+
+
+@app.post("/api/approvals/{approval_id}/reject", tags=["connectors"])
+def reject_connector(
+    approval_id: str,
+    body: ApprovalDecisionReq,
+    req: Request,
+    actor: str = Depends(_current_actor),
+) -> dict:
+    result = connector_store.reject(approval_id, actor, body.reason or "")
+    if not result.get("ok"):
+        raise HTTPException(status_code=400, detail=result.get("detail"))
+    audit.record(
+        action="reject",
+        source="connector",
+        name=approval_id,
+        note=body.reason or "",
+        client_ip=_client_ip(req),
+        actor=actor,
+    )
+    return result
 
 
 # ---------------------------------------------------------------------------
